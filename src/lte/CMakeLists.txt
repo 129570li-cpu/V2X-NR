@@ -384,6 +384,7 @@ build_lib(
     ${libapplications}
     ${libcsma}
     ${libconfig-store}
+    ${libgpsr}
   TEST_SOURCES ${test_sources}
   MODULE_ENABLED_FEATURES ${emu_features}
 )

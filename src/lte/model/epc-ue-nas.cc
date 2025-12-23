@@ -28,6 +28,7 @@
 #include "ns3/udp-l4-protocol.h"
 #include <ns3/epc-helper.h>
 #include <ns3/fatal-error.h>
+#include <ns3/gpsr-packet.h>  // GPSR header support
 #include <ns3/ipv4-header.h>
 #include <ns3/ipv4-l3-protocol.h>
 #include <ns3/ipv6-header.h>
@@ -229,12 +230,31 @@ EpcUeNas::Send(Ptr<Packet> packet, uint16_t protocolNumber)
             uint16_t remotePort = 0;
             if (protocol == UdpL4Protocol::PROT_NUMBER)
             {
+                // Skip GPSR POS headers (for GPSR routing compatibility)
+                // All UDP packets have GPSR POS header added by AddHeaders
+                gpsr::TypeHeader gpsrTypeHdr;
+                pCopy->RemoveHeader(gpsrTypeHdr);
+                if (gpsrTypeHdr.IsValid() && gpsrTypeHdr.Get() == gpsr::GPSRTYPE_POS)
+                {
+                    gpsr::PositionHeader gpsrPosHdr;
+                    pCopy->RemoveHeader(gpsrPosHdr);
+                }
+                
                 UdpHeader udpHeader;
                 pCopy->RemoveHeader(udpHeader);
                 remotePort = udpHeader.GetDestinationPort();
             }
             else if (protocol == TcpL4Protocol::PROT_NUMBER)
             {
+                // Skip GPSR POS headers (for GPSR routing compatibility)
+                gpsr::TypeHeader gpsrTypeHdr;
+                pCopy->RemoveHeader(gpsrTypeHdr);
+                if (gpsrTypeHdr.IsValid() && gpsrTypeHdr.Get() == gpsr::GPSRTYPE_POS)
+                {
+                    gpsr::PositionHeader gpsrPosHdr;
+                    pCopy->RemoveHeader(gpsrPosHdr);
+                }
+                
                 TcpHeader tcpHeader;
                 pCopy->RemoveHeader(tcpHeader);
                 remotePort = tcpHeader.GetDestinationPort();
@@ -363,12 +383,30 @@ EpcUeNas::Send(Ptr<Packet> packet, uint16_t protocolNumber)
             uint16_t remotePort = 0;
             if (protocol == UdpL4Protocol::PROT_NUMBER)
             {
+                // Skip GPSR POS headers (for GPSR routing compatibility)
+                gpsr::TypeHeader gpsrTypeHdr;
+                pCopy->RemoveHeader(gpsrTypeHdr);
+                if (gpsrTypeHdr.IsValid() && gpsrTypeHdr.Get() == gpsr::GPSRTYPE_POS)
+                {
+                    gpsr::PositionHeader gpsrPosHdr;
+                    pCopy->RemoveHeader(gpsrPosHdr);
+                }
+                
                 UdpHeader udpHeader;
                 pCopy->RemoveHeader(udpHeader);
                 remotePort = udpHeader.GetDestinationPort();
             }
             else if (protocol == TcpL4Protocol::PROT_NUMBER)
             {
+                // Skip GPSR POS headers (for GPSR routing compatibility)
+                gpsr::TypeHeader gpsrTypeHdr;
+                pCopy->RemoveHeader(gpsrTypeHdr);
+                if (gpsrTypeHdr.IsValid() && gpsrTypeHdr.Get() == gpsr::GPSRTYPE_POS)
+                {
+                    gpsr::PositionHeader gpsrPosHdr;
+                    pCopy->RemoveHeader(gpsrPosHdr);
+                }
+                
                 TcpHeader tcpHeader;
                 pCopy->RemoveHeader(tcpHeader);
                 remotePort = tcpHeader.GetDestinationPort();

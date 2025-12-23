@@ -38,6 +38,7 @@
 #include "ns3/tcp-l4-protocol.h"
 #include "ns3/udp-header.h"
 #include "ns3/udp-l4-protocol.h"
+#include "ns3/gpsr-packet.h"  // GPSR header support
 
 namespace ns3
 {
@@ -123,6 +124,37 @@ EpcTftClassifier::Classify(Ptr<Packet> p, EpcTft::Direction direction, uint16_t 
         {
             if (protocol == UdpL4Protocol::PROT_NUMBER && payloadSize >= 8)
             {
+                // Check if GPSR headers are present and skip them
+                // GPSR TypeHeader is 1 byte with value 1 (HELLO) or 2 (POS)
+                if (pCopy->GetSize() >= 1)
+                {
+                    uint8_t firstByte;
+                    pCopy->CopyData(&firstByte, 1);
+                    // GPSR TypeHeader has values 1 or 2, UDP source port is typically > 1024
+                    // Check for GPSR_POS (2) which is used for data packets
+                    // Check for GPSR headers: HELLO (1) or POS (2)
+                    if (firstByte == 1 || firstByte == 2)
+                    {
+                        NS_LOG_DEBUG("Detected GPSR headers, skipping...");
+                        gpsr::TypeHeader gpsrTypeHdr;
+                        pCopy->RemoveHeader(gpsrTypeHdr);
+                        if (gpsrTypeHdr.IsValid())
+                        {
+                            if (gpsrTypeHdr.Get() == gpsr::GPSRTYPE_POS)
+                            {
+                                gpsr::PositionHeader gpsrPosHdr;
+                                pCopy->RemoveHeader(gpsrPosHdr);
+                                NS_LOG_DEBUG("Skipped GPSR TypeHeader and PositionHeader");
+                            }
+                            else if (gpsrTypeHdr.Get() == gpsr::GPSRTYPE_HELLO)
+                            {
+                                gpsr::HelloHeader gpsrHelloHdr;
+                                pCopy->RemoveHeader(gpsrHelloHdr);
+                                NS_LOG_DEBUG("Skipped GPSR TypeHeader and HelloHeader");
+                            }
+                        }
+                    }
+                }
                 UdpHeader udpHeader;
                 pCopy->RemoveHeader(udpHeader);
                 if (direction == EpcTft::UPLINK)
@@ -148,6 +180,34 @@ EpcTftClassifier::Classify(Ptr<Packet> p, EpcTft::Direction direction, uint16_t 
             }
             else if (protocol == TcpL4Protocol::PROT_NUMBER && payloadSize >= 20)
             {
+                // Check if GPSR headers are present and skip them (same as UDP)
+                if (pCopy->GetSize() >= 1)
+                {
+                    uint8_t firstByte;
+                    pCopy->CopyData(&firstByte, 1);
+                    // Check for GPSR headers: HELLO (1) or POS (2)
+                    if (firstByte == 1 || firstByte == 2)
+                    {
+                        NS_LOG_DEBUG("Detected GPSR headers in TCP packet, skipping...");
+                        gpsr::TypeHeader gpsrTypeHdr;
+                        pCopy->RemoveHeader(gpsrTypeHdr);
+                        if (gpsrTypeHdr.IsValid())
+                        {
+                            if (gpsrTypeHdr.Get() == gpsr::GPSRTYPE_POS)
+                            {
+                                gpsr::PositionHeader gpsrPosHdr;
+                                pCopy->RemoveHeader(gpsrPosHdr);
+                                NS_LOG_DEBUG("Skipped GPSR TypeHeader and PositionHeader for TCP");
+                            }
+                            else if (gpsrTypeHdr.Get() == gpsr::GPSRTYPE_HELLO)
+                            {
+                                gpsr::HelloHeader gpsrHelloHdr;
+                                pCopy->RemoveHeader(gpsrHelloHdr);
+                                NS_LOG_DEBUG("Skipped GPSR TypeHeader and HelloHeader for TCP");
+                            }
+                        }
+                    }
+                }
                 TcpHeader tcpHeader;
                 pCopy->RemoveHeader(tcpHeader);
                 if (direction == EpcTft::UPLINK)
