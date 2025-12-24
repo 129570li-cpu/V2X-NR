@@ -382,11 +382,11 @@ main(int argc, char* argv[])
     }
     
     LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_DEBUG);
-    // LogComponentEnable("EpcTftClassifier", LOG_LEVEL_INFO);
-    // LogComponentEnable("LteSlTft", LOG_LEVEL_INFO);
+    LogComponentEnable("EpcTftClassifier", LOG_LEVEL_INFO);
+    LogComponentEnable("LteSlTft", LOG_LEVEL_INFO);
     LogComponentEnable("NrSlUeMac", LOG_LEVEL_ERROR);
     LogComponentEnable("SlNrGpsrExample", LOG_LEVEL_INFO);
-    // LogComponentEnable("EpcUeNas", LOG_LEVEL_INFO);
+    LogComponentEnable("EpcUeNas", LOG_LEVEL_INFO);
     // LogComponentEnable("NrSpectrumPhy", LOG_LEVEL_INFO);
     LogComponentEnableAll(LOG_PREFIX_TIME);
     LogComponentEnableAll(LOG_PREFIX_NODE);

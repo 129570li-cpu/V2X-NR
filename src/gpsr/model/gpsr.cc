@@ -21,6 +21,7 @@
 #include "ns3/simulator.h"
 #include "ns3/trace-source-accessor.h"
 #include "ns3/udp-socket-factory.h"
+#include "ns3/udp-l4-protocol.h"
 #include "ns3/uinteger.h"
 
 #include <algorithm>
@@ -279,6 +280,10 @@ RoutingProtocol::SendHello()
         packet->AddHeader(helloHeader);
         TypeHeader tHeader(GPSRTYPE_HELLO);
         packet->AddHeader(tHeader);
+        
+        // Add tag to mark this packet as having GPSR headers
+        GpsrHeaderTag tag(GPSRTYPE_HELLO);
+        packet->AddPacketTag(tag);
 
         Ipv4Address destination;
         if (iface.GetMask() == Ipv4Mask::GetOnes())
@@ -501,6 +506,15 @@ RoutingProtocol::RouteOutput(Ptr<Packet> p,
         return Ptr<Ipv4Route>();
     }
 
+    // FIX: GPSR only supports UDP traffic. Reject non-UDP early to prevent black holes.
+    // Non-UDP packets would be dropped later by Forwarding/DeferredRouteOutput anyway.
+    if (header.GetProtocol() != UdpL4Protocol::PROT_NUMBER) // Not UDP
+    {
+        sockerr = Socket::ERROR_NOROUTETOHOST;
+        NS_LOG_LOGIC("GPSR only supports UDP. Protocol " << (int)header.GetProtocol() << " rejected.");
+        return Ptr<Ipv4Route>();
+    }
+
     sockerr = Socket::ERROR_NOTERROR;
     Ptr<Ipv4Route> route = Create<Ipv4Route>();
     Ipv4Address dst = header.GetDestination();
@@ -687,23 +701,52 @@ RoutingProtocol::RouteInput(Ptr<const Packet> p,
     {
         Ptr<Packet> packet = p->Copy();
 
-        // Remove GPSR headers if this is a data packet (not HELLO)
-        // Data packets have TypeHeader(GPSRTYPE_POS) + PositionHeader (54+ bytes)
-        if (packet->GetSize() >= 54)
+        // Remove GPSR headers if this is a UDP data packet (not HELLO, not ICMP)
+        // ICMP packets may inherit stale GpsrHeaderTag from original packets due to NS-3 Packet reuse
+        // Only UDP packets (protocol 17) should have GPSR headers
+        // FIX: Also check for fragmentation. GPSR does not support fragmentation.
+        // We must drop ANY fragmented packet (offset != 0 OR not last fragment).
+        GpsrHeaderTag gpsrTag;
+        uint32_t minGpsrSize = TypeHeader().GetSerializedSize() + PositionHeader().GetSerializedSize();
+        
+        if (header.GetProtocol() == UdpL4Protocol::PROT_NUMBER && // UDP only
+            header.GetFragmentOffset() == 0 && header.IsLastFragment() && // No fragmentation allowed
+            packet->GetSize() >= minGpsrSize && // Sufficient size for GPSR headers
+            packet->PeekPacketTag(gpsrTag) && gpsrTag.GetType() == GPSRTYPE_POS)
         {
+            NS_LOG_DEBUG("LocalDelivery Check: Size=" << packet->GetSize() 
+                         << " FragOff=" << header.GetFragmentOffset()
+                         << " LastFrag=" << header.IsLastFragment()
+                         << " Tag=" << (int)gpsrTag.GetType());
+
             TypeHeader tHeader(GPSRTYPE_POS);
             packet->RemoveHeader(tHeader);
-            if (tHeader.IsValid() && tHeader.Get() == GPSRTYPE_POS)
+            PositionHeader phdr;
+            packet->RemoveHeader(phdr);
+            packet->RemovePacketTag(gpsrTag);
+            NS_LOG_DEBUG("Removed GPSR headers for local delivery");
+        }
+        else if (packet->PeekPacketTag(gpsrTag) && gpsrTag.GetType() == GPSRTYPE_POS)
+        {
+            // This is a GPSR-routed UDP packet that doesn't meet delivery criteria.
+            // Most likely it's a fragment. If we deliver it, the GPSR headers will
+            // remain in the payload and corrupt the reassembled data.
+            // FIX: DROP any fragmented GPSR packet instead of delivering with headers.
+            if (header.GetFragmentOffset() != 0 || !header.IsLastFragment())
             {
-                PositionHeader phdr;
-                packet->RemoveHeader(phdr);
-                NS_LOG_DEBUG("Removed GPSR headers for local delivery");
+                NS_LOG_DEBUG("LocalDelivery: Dropping fragmented GPSR packet (fragOff=" 
+                             << header.GetFragmentOffset() << " moreFrags=" << !header.IsLastFragment() << ")");
+                return false; // Drop the packet entirely
             }
-            else
-            {
-                // Not a GPSRTYPE_POS, restore original packet
-                packet = p->Copy();
-            }
+            // Size too small or other issue - clear tag and continue
+            NS_LOG_DEBUG("LocalDelivery: Clearing stale GPSR tag (protocol=" 
+                         << (int)header.GetProtocol() << " size=" << packet->GetSize() << ")");
+            packet->RemovePacketTag(gpsrTag);
+        }
+        else if (packet->PeekPacketTag(gpsrTag))
+        {
+            // Non-POS tag (e.g., HELLO) - just clear it
+            packet->RemovePacketTag(gpsrTag);
         }
 
         if (dst != m_ipv4->GetAddress(1, 0).GetBroadcast())
@@ -741,12 +784,53 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
     Vector RecPosition;
     uint8_t inRec = 0;
 
-    NS_LOG_DEBUG("Forwarding packet size before RemoveHeader: " << p->GetSize());
+    NS_LOG_DEBUG("Forwarding packet size: " << p->GetSize());
+
+    // FIX: Four-layer protection before RemoveHeader to avoid crash on non-GPSR packets
+    // Layer 0: Check protocol - only UDP packets have GPSR headers (ICMP inherits stale tags)
+    if (header.GetProtocol() != UdpL4Protocol::PROT_NUMBER) // Not UDP
+    {
+        NS_LOG_DEBUG("Non-UDP packet (protocol " << (int)header.GetProtocol() << "). Not a GPSR data packet. Drop.");
+        // Clear any stale GPSR tag that might have been inherited
+        GpsrHeaderTag staleTag;
+        if (p->PeekPacketTag(staleTag))
+        {
+            p->RemovePacketTag(staleTag);
+        }
+        return false;
+    }
+    
+    // Layer 1: Check fragmentation - GPSR does not support fragmented packets
+    // Drop ANY fragmented packet: offset != 0 (not first) OR !IsLastFragment (more fragments follow)
+    if (header.GetFragmentOffset() != 0 || !header.IsLastFragment())
+    {
+        NS_LOG_DEBUG("Fragmented packet (offset=" << header.GetFragmentOffset() 
+                     << " moreFrags=" << !header.IsLastFragment() << "). GPSR cannot route fragments. Drop.");
+        return false;
+    }
+    
+    // Layer 2: Check Tag - only packets with GPSRTYPE_POS tag have GPSR headers
+    GpsrHeaderTag tag;
+    if (!p->PeekPacketTag(tag) || tag.GetType() != GPSRTYPE_POS)
+    {
+        NS_LOG_DEBUG("No GPSR POS tag found. Not a GPSR data packet. Drop.");
+        return false;
+    }
+    
+    // Layer 3: Check size - must have at least TypeHeader + PositionHeader
+    uint32_t minGpsrSize = TypeHeader().GetSerializedSize() + PositionHeader().GetSerializedSize();
+    if (p->GetSize() < minGpsrSize)
+    {
+        NS_LOG_DEBUG("Packet too small for GPSR headers (size " << p->GetSize() << " < " << minGpsrSize << "). Drop.");
+        return false;
+    }
+    
+    // Safe to remove headers now
     p->RemoveHeader(tHeader);
 
     if (!tHeader.IsValid())
     {
-        NS_LOG_DEBUG("GPSR message " << p->GetUid() << " with unknown type (type byte value was not 1 or 2). Packet size after RemoveHeader: " << p->GetSize() << ". Drop");
+        NS_LOG_DEBUG("GPSR TypeHeader invalid after RemoveHeader. Drop.");
         return false;
     }
 
@@ -783,6 +867,9 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
     {
         p->AddHeader(hdr);
         p->AddHeader(tHeader);
+        // Sync tag with header
+        GpsrHeaderTag tag(GPSRTYPE_POS);
+        if (!p->PeekPacketTag(tag)) { p->AddPacketTag(tag); }
         RecoveryMode(dst, p, ucb, header);
         return true;
     }
@@ -811,6 +898,9 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
                                  myPos.y);
         p->AddHeader(posHeader);
         p->AddHeader(tHeader);
+        // Sync tag with header
+        GpsrHeaderTag tag(GPSRTYPE_POS);
+        if (!p->PeekPacketTag(tag)) { p->AddPacketTag(tag); }
 
         Ptr<Ipv4Route> route = Create<Ipv4Route>();
         route->SetDestination(dst);
@@ -834,6 +924,9 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
 
         p->AddHeader(hdr);
         p->AddHeader(tHeader);
+        // Sync tag with header
+        GpsrHeaderTag tag(GPSRTYPE_POS);
+        if (!p->PeekPacketTag(tag)) { p->AddPacketTag(tag); }
 
         NS_LOG_LOGIC("Entering recovery-mode to " << dst << " at "
                                                   << m_ipv4->GetAddress(1, 0).GetLocal());
@@ -864,10 +957,26 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
     Vector recPos;
 
     TypeHeader tHeader(GPSRTYPE_POS);
+    
+    // FIX: Check Tag and Size before RemoveHeader
+    GpsrHeaderTag tag;
+    if (!p->PeekPacketTag(tag) || tag.GetType() != GPSRTYPE_POS)
+    {
+        NS_LOG_DEBUG("RecoveryMode: No GPSR POS tag found. Drop.");
+        return;
+    }
+    
+    uint32_t minGpsrSize = TypeHeader().GetSerializedSize() + PositionHeader().GetSerializedSize();
+    if (p->GetSize() < minGpsrSize)
+    {
+        NS_LOG_DEBUG("RecoveryMode: Packet too small for GPSR headers. Drop.");
+        return;
+    }
+    
     p->RemoveHeader(tHeader);
     if (!tHeader.IsValid())
     {
-        NS_LOG_DEBUG("GPSR message with unknown type in recovery. Drop");
+        NS_LOG_DEBUG("RecoveryMode: GPSR TypeHeader invalid. Drop");
         return;
     }
 
@@ -894,6 +1003,9 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
                                  myPos.y);
         p->AddHeader(posHeader);
         p->AddHeader(tHeader);
+        // Sync tag with header
+        GpsrHeaderTag tag(GPSRTYPE_POS);
+        if (!p->PeekPacketTag(tag)) { p->AddPacketTag(tag); }
     }
 
     // Find best angle neighbor (right hand rule)
@@ -927,25 +1039,27 @@ RoutingProtocol::DeferredRouteOutput(Ptr<const Packet> p,
     Ipv4Address dst = header.GetDestination();
     Ptr<Packet> packet = p->Copy();
 
-    // Check if packet already has GPSR headers (e.g., came through AddHeaders path)
-    // Only add headers if the packet doesn't already have them
-    bool hasGpsrHeaders = false;
-    if (packet->GetSize() >= 1)
+    // FIX: GPSR only processes UDP packets.
+    // Non-UDP packets (e.g., ICMP) should not have GPSR headers added.
+    if (header.GetProtocol() != UdpL4Protocol::PROT_NUMBER) // Not UDP
     {
-        uint8_t firstByte;
-        packet->CopyData(&firstByte, 1);
-        // GPSR TypeHeader has values 1 (HELLO) or 2 (POS)
-        if (firstByte == 1 || firstByte == 2)
+        NS_LOG_DEBUG("DeferredRouteOutput: Non-UDP packet (protocol " << (int)header.GetProtocol() << "). GPSR only handles UDP. Dropping.");
+        // Clear any stale tag that might have been inherited
+        GpsrHeaderTag staleTag;
+        if (packet->PeekPacketTag(staleTag))
         {
-            Ptr<Packet> testPacket = packet->Copy();
-            TypeHeader tTest(GPSRTYPE_POS);
-            testPacket->RemoveHeader(tTest);
-            if (tTest.IsValid())
-            {
-                hasGpsrHeaders = true;
-                NS_LOG_DEBUG("Packet already has GPSR headers, not adding again");
-            }
+            packet->RemovePacketTag(staleTag);
         }
+        return; // Don't add headers, don't queue
+    }
+
+    // For UDP packets: Check if GPSR headers are already present
+    GpsrHeaderTag existingTag;
+    bool hasGpsrHeaders = packet->PeekPacketTag(existingTag) && existingTag.GetType() == GPSRTYPE_POS;
+    
+    if (hasGpsrHeaders)
+    {
+        NS_LOG_DEBUG("UDP packet already has GPSR POS tag, not adding headers again");
     }
 
     if (!hasGpsrHeaders)
@@ -970,6 +1084,9 @@ RoutingProtocol::DeferredRouteOutput(Ptr<const Packet> p,
         packet->AddHeader(posHeader);
         TypeHeader tHeader(GPSRTYPE_POS);
         packet->AddHeader(tHeader);
+        // Sync tag with header
+        GpsrHeaderTag tag(GPSRTYPE_POS);
+        if (!packet->PeekPacketTag(tag)) { packet->AddPacketTag(tag); }
     }
 
     if (m_queue.GetSize() == 0)
@@ -1072,10 +1189,26 @@ RoutingProtocol::SendPacketFromQueue(Ipv4Address dst)
             Ipv4Header header = queueEntry.GetIpv4Header();
 
             TypeHeader tHeader(GPSRTYPE_POS);
+            
+            // FIX: Check Tag and Size before RemoveHeader
+            GpsrHeaderTag tag;
+            if (!p->PeekPacketTag(tag) || tag.GetType() != GPSRTYPE_POS)
+            {
+                NS_LOG_DEBUG("SendPacketFromQueue: No GPSR POS tag. Drop.");
+                continue;
+            }
+            
+            uint32_t minGpsrSize = TypeHeader().GetSerializedSize() + PositionHeader().GetSerializedSize();
+            if (p->GetSize() < minGpsrSize)
+            {
+                NS_LOG_DEBUG("SendPacketFromQueue: Packet too small. Drop.");
+                continue;
+            }
+            
             p->RemoveHeader(tHeader);
             if (!tHeader.IsValid())
             {
-                NS_LOG_DEBUG("GPSR message with unknown type. Drop");
+                NS_LOG_DEBUG("SendPacketFromQueue: Invalid TypeHeader. Drop.");
                 continue;
             }
 
@@ -1098,6 +1231,9 @@ RoutingProtocol::SendPacketFromQueue(Ipv4Address dst)
                                      Position.y);
             p->AddHeader(posHeader);
             p->AddHeader(tHeader);
+            // Sync tag with header
+            GpsrHeaderTag newTag(GPSRTYPE_POS);
+            if (!p->PeekPacketTag(newTag)) { p->AddPacketTag(newTag); }
 
             RecoveryMode(dst, p, ucb, header);
         }
@@ -1145,6 +1281,21 @@ RoutingProtocol::AddHeaders(Ptr<Packet> p,
 {
     NS_LOG_FUNCTION(this << " source " << source << " destination " << destination);
 
+    // Check if packet already has a GpsrHeaderTag (e.g., HELLO packets)
+    // If so, skip adding POS headers - this packet is already a GPSR control packet
+    GpsrHeaderTag existingTag;
+    if (p->PeekPacketTag(existingTag))
+    {
+        NS_LOG_DEBUG("Packet already has GpsrHeaderTag (type " << (int)existingTag.GetType() 
+                     << "), skipping AddHeaders");
+        // Just pass the packet through without adding POS headers
+        if (!m_downTarget.IsNull())
+        {
+            m_downTarget(p, source, destination, protocol, route);
+        }
+        return;
+    }
+
     Ptr<MobilityModel> mm = m_ipv4->GetObject<MobilityModel>();
     Vector myPos = mm->GetPosition();
 
@@ -1181,7 +1332,15 @@ RoutingProtocol::AddHeaders(Ptr<Packet> p,
     p->AddHeader(posHeader);
     TypeHeader tHeader(GPSRTYPE_POS);
     p->AddHeader(tHeader);
-    NS_LOG_DEBUG("Added GPSR headers to packet " << p->GetUid());
+    
+    // Add tag to mark this packet as having GPSR headers (only if not already present)
+    GpsrHeaderTag tag(GPSRTYPE_POS);
+    if (!p->PeekPacketTag(tag))
+    {
+        p->AddPacketTag(tag);
+    }
+    
+    NS_LOG_DEBUG("Added GPSR headers and tag to packet " << p->GetUid());
 
     // Send the packet with headers via the IP layer's down target
     // m_downTarget must be configured by calling GpsrHelper::Install() after InternetStackHelper

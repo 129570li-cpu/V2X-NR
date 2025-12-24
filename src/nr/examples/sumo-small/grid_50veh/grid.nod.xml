@@ -1,0 +1,19 @@
+<?xml version="1.0" ?>
+<nodes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/nodes_file.xsd">
+    <node id="N_0_0" x="0.0" y="0.0" type="priority"/>
+    <node id="N_0_1" x="233.0" y="0.0" type="priority"/>
+    <node id="N_0_2" x="466.0" y="0.0" type="priority"/>
+    <node id="N_0_3" x="699.0" y="0.0" type="priority"/>
+    <node id="N_1_0" x="0.0" y="233.0" type="priority"/>
+    <node id="N_1_1" x="233.0" y="233.0" type="priority"/>
+    <node id="N_1_2" x="466.0" y="233.0" type="priority"/>
+    <node id="N_1_3" x="699.0" y="233.0" type="priority"/>
+    <node id="N_2_0" x="0.0" y="466.0" type="priority"/>
+    <node id="N_2_1" x="233.0" y="466.0" type="priority"/>
+    <node id="N_2_2" x="466.0" y="466.0" type="priority"/>
+    <node id="N_2_3" x="699.0" y="466.0" type="priority"/>
+    <node id="N_3_0" x="0.0" y="699.0" type="priority"/>
+    <node id="N_3_1" x="233.0" y="699.0" type="priority"/>
+    <node id="N_3_2" x="466.0" y="699.0" type="priority"/>
+    <node id="N_3_3" x="699.0" y="699.0" type="priority"/>
+</nodes>

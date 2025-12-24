@@ -9,6 +9,7 @@
 
 #include "ns3/header.h"
 #include "ns3/ipv4-address.h"
+#include "ns3/tag.h"
 
 #include <iostream>
 
@@ -226,6 +227,71 @@ class PositionHeader : public Header
 };
 
 std::ostream& operator<<(std::ostream& os, const PositionHeader& h);
+
+/**
+ * \ingroup gpsr
+ * \brief Tag to mark packets with GPSR headers
+ * 
+ * This tag is added when GPSR headers are added to a packet.
+ * It allows safe detection of GPSR headers before calling RemoveHeader,
+ * avoiding NS-3 metadata errors when packet content accidentally matches
+ * GPSR header format.
+ */
+class GpsrHeaderTag : public Tag
+{
+  public:
+    GpsrHeaderTag()
+        : m_type(GPSRTYPE_POS)
+    {
+    }
+
+    GpsrHeaderTag(MessageType type)
+        : m_type(type)
+    {
+    }
+
+    static TypeId GetTypeId()
+    {
+        static TypeId tid = TypeId("ns3::gpsr::GpsrHeaderTag")
+                                .SetParent<Tag>()
+                                .SetGroupName("Gpsr")
+                                .AddConstructor<GpsrHeaderTag>();
+        return tid;
+    }
+
+    TypeId GetInstanceTypeId() const override
+    {
+        return GetTypeId();
+    }
+
+    uint32_t GetSerializedSize() const override
+    {
+        return 1;  // Just store the type byte
+    }
+
+    void Serialize(TagBuffer i) const override
+    {
+        i.WriteU8(static_cast<uint8_t>(m_type));
+    }
+
+    void Deserialize(TagBuffer i) override
+    {
+        m_type = static_cast<MessageType>(i.ReadU8());
+    }
+
+    void Print(std::ostream& os) const override
+    {
+        os << "GpsrHeaderTag type=" << static_cast<int>(m_type);
+    }
+
+    MessageType GetType() const
+    {
+        return m_type;
+    }
+
+  private:
+    MessageType m_type;
+};
 
 } // namespace gpsr
 } // namespace ns3

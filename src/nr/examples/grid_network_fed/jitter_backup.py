@@ -5,8 +5,8 @@ import sys
 def jitter_value(val_str):
     try:
         val = float(val_str)
-        # Add random jitter between -0.5m and 0.5m
-        jitter = random.uniform(-0.5, 0.5)
+        # Add random jitter between -5m and 5m
+        jitter = random.uniform(-5, 5)
         return f"{val + jitter:.4f}"
     except ValueError:
         return val_str
@@ -56,4 +56,4 @@ def process_file(file_path):
     print(f"Done. Modified {modified_count} lines.")
 
 if __name__ == "__main__":
-    process_file("/home/lyh/ns3-nr-v2x/ns-3-dev/src/nr/examples/grid_network_fed/mobility_backup.tcl")
+    process_file("/home/lyh/ns3-nr-v2x/ns-3-dev/src/nr/examples/sumo-small/grid_50veh/mobility.tcl")

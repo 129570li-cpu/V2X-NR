@@ -1,0 +1,83 @@
+<?xml version="1.0" ?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="passenger" maxSpeed="22.2" speedFactor="1.0" speedDev="0.1" length="4.5" minGap="2.0" accel="2.6" decel="4.5" sigma="0.5"/>
+    <vType id="truck" maxSpeed="25.0" speedFactor="0.9" speedDev="0.05" length="12.0" minGap="3.0" accel="1.8" decel="4.0" sigma="0.5"/>
+    <vType id="bus" maxSpeed="22.2" speedFactor="0.85" speedDev="0.05" length="12.0" minGap="3.0" accel="2.0" decel="4.0" sigma="0.5"/>
+    <vType id="rsu_type" maxSpeed="0.1" accel="0.1" decel="0.1" length="1.0" width="1.0" minGap="0.1" sigma="0.0" lcStrategic="0" lcCooperative="0" lcSpeedGain="0" lcKeepRight="0" lcSublane="0" color="0,0,1"/>
+    <route id="corridor_row_0" edges="E_H_0_0_E E_H_0_1_E E_H_0_2_W E_H_0_1_W"/>
+    <route id="corridor_row_1" edges="E_H_1_0_E E_H_1_1_E E_H_1_2_W E_H_1_1_W"/>
+    <route id="corridor_row_2" edges="E_H_2_0_E E_H_2_1_E E_H_2_2_W E_H_2_1_W"/>
+    <route id="corridor_row_3" edges="E_H_3_0_E E_H_3_1_E E_H_3_2_W E_H_3_1_W"/>
+    <route id="corridor_col_0" edges="E_V_0_0_N E_V_1_0_N E_V_2_0_S E_V_1_0_S"/>
+    <route id="corridor_col_1" edges="E_V_0_1_N E_V_1_1_N E_V_2_1_S E_V_1_1_S"/>
+    <route id="corridor_col_2" edges="E_V_0_2_N E_V_1_2_N E_V_2_2_S E_V_1_2_S"/>
+    <route id="corridor_col_3" edges="E_V_0_3_N E_V_1_3_N E_V_2_3_S E_V_1_3_S"/>
+    <route id="loop_2_0_ccw" edges="E_V_2_0_N E_H_3_0_E E_V_3_1_S E_H_2_1_W E_V_2_0_N E_H_3_0_E E_V_3_1_S E_H_2_1_W E_V_2_0_N E_H_3_0_E E_V_3_1_S E_H_2_1_W E_V_2_0_N E_H_3_0_E E_V_3_1_S E_H_2_1_W E_V_2_0_N E_H_3_0_E E_V_3_1_S E_H_2_1_W E_V_2_0_N E_H_3_0_E E_V_3_1_S E_H_2_1_W E_V_2_0_N E_H_3_0_E E_V_3_1_S E_H_2_1_W E_V_2_0_N E_H_3_0_E E_V_3_1_S E_H_2_1_W E_V_2_0_N E_H_3_0_E E_V_3_1_S E_H_2_1_W E_V_2_0_N E_H_3_0_E E_V_3_1_S E_H_2_1_W E_V_2_0_N E_H_3_0_E E_V_3_1_S E_H_2_1_W E_V_2_0_N E_H_3_0_E E_V_3_1_S E_H_2_1_W"/>
+    <route id="loop_2_0_cw" edges="E_H_2_0_E E_V_2_1_N E_H_3_1_W E_V_3_0_S E_H_2_0_E E_V_2_1_N E_H_3_1_W E_V_3_0_S E_H_2_0_E E_V_2_1_N E_H_3_1_W E_V_3_0_S E_H_2_0_E E_V_2_1_N E_H_3_1_W E_V_3_0_S E_H_2_0_E E_V_2_1_N E_H_3_1_W E_V_3_0_S E_H_2_0_E E_V_2_1_N E_H_3_1_W E_V_3_0_S E_H_2_0_E E_V_2_1_N E_H_3_1_W E_V_3_0_S E_H_2_0_E E_V_2_1_N E_H_3_1_W E_V_3_0_S E_H_2_0_E E_V_2_1_N E_H_3_1_W E_V_3_0_S E_H_2_0_E E_V_2_1_N E_H_3_1_W E_V_3_0_S E_H_2_0_E E_V_2_1_N E_H_3_1_W E_V_3_0_S E_H_2_0_E E_V_2_1_N E_H_3_1_W E_V_3_0_S"/>
+    <route id="loop_0_2_cw" edges="E_H_0_2_E E_V_0_3_N E_H_1_3_W E_V_1_2_S E_H_0_2_E E_V_0_3_N E_H_1_3_W E_V_1_2_S E_H_0_2_E E_V_0_3_N E_H_1_3_W E_V_1_2_S E_H_0_2_E E_V_0_3_N E_H_1_3_W E_V_1_2_S E_H_0_2_E E_V_0_3_N E_H_1_3_W E_V_1_2_S E_H_0_2_E E_V_0_3_N E_H_1_3_W E_V_1_2_S E_H_0_2_E E_V_0_3_N E_H_1_3_W E_V_1_2_S E_H_0_2_E E_V_0_3_N E_H_1_3_W E_V_1_2_S E_H_0_2_E E_V_0_3_N E_H_1_3_W E_V_1_2_S E_H_0_2_E E_V_0_3_N E_H_1_3_W E_V_1_2_S E_H_0_2_E E_V_0_3_N E_H_1_3_W E_V_1_2_S E_H_0_2_E E_V_0_3_N E_H_1_3_W E_V_1_2_S"/>
+    <route id="loop_1_1_ccw" edges="E_V_1_1_N E_H_2_1_E E_V_2_2_S E_H_1_2_W E_V_1_1_N E_H_2_1_E E_V_2_2_S E_H_1_2_W E_V_1_1_N E_H_2_1_E E_V_2_2_S E_H_1_2_W E_V_1_1_N E_H_2_1_E E_V_2_2_S E_H_1_2_W E_V_1_1_N E_H_2_1_E E_V_2_2_S E_H_1_2_W E_V_1_1_N E_H_2_1_E E_V_2_2_S E_H_1_2_W E_V_1_1_N E_H_2_1_E E_V_2_2_S E_H_1_2_W E_V_1_1_N E_H_2_1_E E_V_2_2_S E_H_1_2_W E_V_1_1_N E_H_2_1_E E_V_2_2_S E_H_1_2_W E_V_1_1_N E_H_2_1_E E_V_2_2_S E_H_1_2_W E_V_1_1_N E_H_2_1_E E_V_2_2_S E_H_1_2_W E_V_1_1_N E_H_2_1_E E_V_2_2_S E_H_1_2_W"/>
+    <route id="loop_0_2_ccw" edges="E_V_0_2_N E_H_1_2_E E_V_1_3_S E_H_0_3_W E_V_0_2_N E_H_1_2_E E_V_1_3_S E_H_0_3_W E_V_0_2_N E_H_1_2_E E_V_1_3_S E_H_0_3_W E_V_0_2_N E_H_1_2_E E_V_1_3_S E_H_0_3_W E_V_0_2_N E_H_1_2_E E_V_1_3_S E_H_0_3_W E_V_0_2_N E_H_1_2_E E_V_1_3_S E_H_0_3_W E_V_0_2_N E_H_1_2_E E_V_1_3_S E_H_0_3_W E_V_0_2_N E_H_1_2_E E_V_1_3_S E_H_0_3_W E_V_0_2_N E_H_1_2_E E_V_1_3_S E_H_0_3_W E_V_0_2_N E_H_1_2_E E_V_1_3_S E_H_0_3_W E_V_0_2_N E_H_1_2_E E_V_1_3_S E_H_0_3_W E_V_0_2_N E_H_1_2_E E_V_1_3_S E_H_0_3_W"/>
+    <route id="loop_1_0_ccw" edges="E_V_1_0_N E_H_2_0_E E_V_2_1_S E_H_1_1_W E_V_1_0_N E_H_2_0_E E_V_2_1_S E_H_1_1_W E_V_1_0_N E_H_2_0_E E_V_2_1_S E_H_1_1_W E_V_1_0_N E_H_2_0_E E_V_2_1_S E_H_1_1_W E_V_1_0_N E_H_2_0_E E_V_2_1_S E_H_1_1_W E_V_1_0_N E_H_2_0_E E_V_2_1_S E_H_1_1_W E_V_1_0_N E_H_2_0_E E_V_2_1_S E_H_1_1_W E_V_1_0_N E_H_2_0_E E_V_2_1_S E_H_1_1_W E_V_1_0_N E_H_2_0_E E_V_2_1_S E_H_1_1_W E_V_1_0_N E_H_2_0_E E_V_2_1_S E_H_1_1_W E_V_1_0_N E_H_2_0_E E_V_2_1_S E_H_1_1_W E_V_1_0_N E_H_2_0_E E_V_2_1_S E_H_1_1_W"/>
+    <route id="loop_2_2_cw" edges="E_H_2_2_E E_V_2_3_N E_H_3_3_W E_V_3_2_S E_H_2_2_E E_V_2_3_N E_H_3_3_W E_V_3_2_S E_H_2_2_E E_V_2_3_N E_H_3_3_W E_V_3_2_S E_H_2_2_E E_V_2_3_N E_H_3_3_W E_V_3_2_S E_H_2_2_E E_V_2_3_N E_H_3_3_W E_V_3_2_S E_H_2_2_E E_V_2_3_N E_H_3_3_W E_V_3_2_S E_H_2_2_E E_V_2_3_N E_H_3_3_W E_V_3_2_S E_H_2_2_E E_V_2_3_N E_H_3_3_W E_V_3_2_S E_H_2_2_E E_V_2_3_N E_H_3_3_W E_V_3_2_S E_H_2_2_E E_V_2_3_N E_H_3_3_W E_V_3_2_S E_H_2_2_E E_V_2_3_N E_H_3_3_W E_V_3_2_S E_H_2_2_E E_V_2_3_N E_H_3_3_W E_V_3_2_S"/>
+    <route id="loop_1_0_cw" edges="E_H_1_0_E E_V_1_1_N E_H_2_1_W E_V_2_0_S E_H_1_0_E E_V_1_1_N E_H_2_1_W E_V_2_0_S E_H_1_0_E E_V_1_1_N E_H_2_1_W E_V_2_0_S E_H_1_0_E E_V_1_1_N E_H_2_1_W E_V_2_0_S E_H_1_0_E E_V_1_1_N E_H_2_1_W E_V_2_0_S E_H_1_0_E E_V_1_1_N E_H_2_1_W E_V_2_0_S E_H_1_0_E E_V_1_1_N E_H_2_1_W E_V_2_0_S E_H_1_0_E E_V_1_1_N E_H_2_1_W E_V_2_0_S E_H_1_0_E E_V_1_1_N E_H_2_1_W E_V_2_0_S E_H_1_0_E E_V_1_1_N E_H_2_1_W E_V_2_0_S E_H_1_0_E E_V_1_1_N E_H_2_1_W E_V_2_0_S E_H_1_0_E E_V_1_1_N E_H_2_1_W E_V_2_0_S"/>
+    <route id="loop_1_2_cw" edges="E_H_1_2_E E_V_1_3_N E_H_2_3_W E_V_2_2_S E_H_1_2_E E_V_1_3_N E_H_2_3_W E_V_2_2_S E_H_1_2_E E_V_1_3_N E_H_2_3_W E_V_2_2_S E_H_1_2_E E_V_1_3_N E_H_2_3_W E_V_2_2_S E_H_1_2_E E_V_1_3_N E_H_2_3_W E_V_2_2_S E_H_1_2_E E_V_1_3_N E_H_2_3_W E_V_2_2_S E_H_1_2_E E_V_1_3_N E_H_2_3_W E_V_2_2_S E_H_1_2_E E_V_1_3_N E_H_2_3_W E_V_2_2_S E_H_1_2_E E_V_1_3_N E_H_2_3_W E_V_2_2_S E_H_1_2_E E_V_1_3_N E_H_2_3_W E_V_2_2_S E_H_1_2_E E_V_1_3_N E_H_2_3_W E_V_2_2_S E_H_1_2_E E_V_1_3_N E_H_2_3_W E_V_2_2_S"/>
+    <route id="loop_2_1_ccw" edges="E_V_2_1_N E_H_3_1_E E_V_3_2_S E_H_2_2_W E_V_2_1_N E_H_3_1_E E_V_3_2_S E_H_2_2_W E_V_2_1_N E_H_3_1_E E_V_3_2_S E_H_2_2_W E_V_2_1_N E_H_3_1_E E_V_3_2_S E_H_2_2_W E_V_2_1_N E_H_3_1_E E_V_3_2_S E_H_2_2_W E_V_2_1_N E_H_3_1_E E_V_3_2_S E_H_2_2_W E_V_2_1_N E_H_3_1_E E_V_3_2_S E_H_2_2_W E_V_2_1_N E_H_3_1_E E_V_3_2_S E_H_2_2_W E_V_2_1_N E_H_3_1_E E_V_3_2_S E_H_2_2_W E_V_2_1_N E_H_3_1_E E_V_3_2_S E_H_2_2_W E_V_2_1_N E_H_3_1_E E_V_3_2_S E_H_2_2_W E_V_2_1_N E_H_3_1_E E_V_3_2_S E_H_2_2_W"/>
+    <route id="loop_0_0_ccw" edges="E_V_0_0_N E_H_1_0_E E_V_1_1_S E_H_0_1_W E_V_0_0_N E_H_1_0_E E_V_1_1_S E_H_0_1_W E_V_0_0_N E_H_1_0_E E_V_1_1_S E_H_0_1_W E_V_0_0_N E_H_1_0_E E_V_1_1_S E_H_0_1_W E_V_0_0_N E_H_1_0_E E_V_1_1_S E_H_0_1_W E_V_0_0_N E_H_1_0_E E_V_1_1_S E_H_0_1_W E_V_0_0_N E_H_1_0_E E_V_1_1_S E_H_0_1_W E_V_0_0_N E_H_1_0_E E_V_1_1_S E_H_0_1_W E_V_0_0_N E_H_1_0_E E_V_1_1_S E_H_0_1_W E_V_0_0_N E_H_1_0_E E_V_1_1_S E_H_0_1_W E_V_0_0_N E_H_1_0_E E_V_1_1_S E_H_0_1_W E_V_0_0_N E_H_1_0_E E_V_1_1_S E_H_0_1_W"/>
+    <route id="loop_1_2_ccw" edges="E_V_1_2_N E_H_2_2_E E_V_2_3_S E_H_1_3_W E_V_1_2_N E_H_2_2_E E_V_2_3_S E_H_1_3_W E_V_1_2_N E_H_2_2_E E_V_2_3_S E_H_1_3_W E_V_1_2_N E_H_2_2_E E_V_2_3_S E_H_1_3_W E_V_1_2_N E_H_2_2_E E_V_2_3_S E_H_1_3_W E_V_1_2_N E_H_2_2_E E_V_2_3_S E_H_1_3_W E_V_1_2_N E_H_2_2_E E_V_2_3_S E_H_1_3_W E_V_1_2_N E_H_2_2_E E_V_2_3_S E_H_1_3_W E_V_1_2_N E_H_2_2_E E_V_2_3_S E_H_1_3_W E_V_1_2_N E_H_2_2_E E_V_2_3_S E_H_1_3_W E_V_1_2_N E_H_2_2_E E_V_2_3_S E_H_1_3_W E_V_1_2_N E_H_2_2_E E_V_2_3_S E_H_1_3_W"/>
+    <route id="loop_0_1_cw" edges="E_H_0_1_E E_V_0_2_N E_H_1_2_W E_V_1_1_S E_H_0_1_E E_V_0_2_N E_H_1_2_W E_V_1_1_S E_H_0_1_E E_V_0_2_N E_H_1_2_W E_V_1_1_S E_H_0_1_E E_V_0_2_N E_H_1_2_W E_V_1_1_S E_H_0_1_E E_V_0_2_N E_H_1_2_W E_V_1_1_S E_H_0_1_E E_V_0_2_N E_H_1_2_W E_V_1_1_S E_H_0_1_E E_V_0_2_N E_H_1_2_W E_V_1_1_S E_H_0_1_E E_V_0_2_N E_H_1_2_W E_V_1_1_S E_H_0_1_E E_V_0_2_N E_H_1_2_W E_V_1_1_S E_H_0_1_E E_V_0_2_N E_H_1_2_W E_V_1_1_S E_H_0_1_E E_V_0_2_N E_H_1_2_W E_V_1_1_S E_H_0_1_E E_V_0_2_N E_H_1_2_W E_V_1_1_S"/>
+    <route id="loop_2_1_cw" edges="E_H_2_1_E E_V_2_2_N E_H_3_2_W E_V_3_1_S E_H_2_1_E E_V_2_2_N E_H_3_2_W E_V_3_1_S E_H_2_1_E E_V_2_2_N E_H_3_2_W E_V_3_1_S E_H_2_1_E E_V_2_2_N E_H_3_2_W E_V_3_1_S E_H_2_1_E E_V_2_2_N E_H_3_2_W E_V_3_1_S E_H_2_1_E E_V_2_2_N E_H_3_2_W E_V_3_1_S E_H_2_1_E E_V_2_2_N E_H_3_2_W E_V_3_1_S E_H_2_1_E E_V_2_2_N E_H_3_2_W E_V_3_1_S E_H_2_1_E E_V_2_2_N E_H_3_2_W E_V_3_1_S E_H_2_1_E E_V_2_2_N E_H_3_2_W E_V_3_1_S E_H_2_1_E E_V_2_2_N E_H_3_2_W E_V_3_1_S E_H_2_1_E E_V_2_2_N E_H_3_2_W E_V_3_1_S"/>
+    <route id="loop_2_2_ccw" edges="E_V_2_2_N E_H_3_2_E E_V_3_3_S E_H_2_3_W E_V_2_2_N E_H_3_2_E E_V_3_3_S E_H_2_3_W E_V_2_2_N E_H_3_2_E E_V_3_3_S E_H_2_3_W E_V_2_2_N E_H_3_2_E E_V_3_3_S E_H_2_3_W E_V_2_2_N E_H_3_2_E E_V_3_3_S E_H_2_3_W E_V_2_2_N E_H_3_2_E E_V_3_3_S E_H_2_3_W E_V_2_2_N E_H_3_2_E E_V_3_3_S E_H_2_3_W E_V_2_2_N E_H_3_2_E E_V_3_3_S E_H_2_3_W E_V_2_2_N E_H_3_2_E E_V_3_3_S E_H_2_3_W E_V_2_2_N E_H_3_2_E E_V_3_3_S E_H_2_3_W E_V_2_2_N E_H_3_2_E E_V_3_3_S E_H_2_3_W E_V_2_2_N E_H_3_2_E E_V_3_3_S E_H_2_3_W"/>
+    <route id="loop_1_1_cw" edges="E_H_1_1_E E_V_1_2_N E_H_2_2_W E_V_2_1_S E_H_1_1_E E_V_1_2_N E_H_2_2_W E_V_2_1_S E_H_1_1_E E_V_1_2_N E_H_2_2_W E_V_2_1_S E_H_1_1_E E_V_1_2_N E_H_2_2_W E_V_2_1_S E_H_1_1_E E_V_1_2_N E_H_2_2_W E_V_2_1_S E_H_1_1_E E_V_1_2_N E_H_2_2_W E_V_2_1_S E_H_1_1_E E_V_1_2_N E_H_2_2_W E_V_2_1_S E_H_1_1_E E_V_1_2_N E_H_2_2_W E_V_2_1_S E_H_1_1_E E_V_1_2_N E_H_2_2_W E_V_2_1_S E_H_1_1_E E_V_1_2_N E_H_2_2_W E_V_2_1_S E_H_1_1_E E_V_1_2_N E_H_2_2_W E_V_2_1_S E_H_1_1_E E_V_1_2_N E_H_2_2_W E_V_2_1_S"/>
+    <route id="loop_0_0_cw" edges="E_H_0_0_E E_V_0_1_N E_H_1_1_W E_V_1_0_S E_H_0_0_E E_V_0_1_N E_H_1_1_W E_V_1_0_S E_H_0_0_E E_V_0_1_N E_H_1_1_W E_V_1_0_S E_H_0_0_E E_V_0_1_N E_H_1_1_W E_V_1_0_S E_H_0_0_E E_V_0_1_N E_H_1_1_W E_V_1_0_S E_H_0_0_E E_V_0_1_N E_H_1_1_W E_V_1_0_S E_H_0_0_E E_V_0_1_N E_H_1_1_W E_V_1_0_S E_H_0_0_E E_V_0_1_N E_H_1_1_W E_V_1_0_S E_H_0_0_E E_V_0_1_N E_H_1_1_W E_V_1_0_S E_H_0_0_E E_V_0_1_N E_H_1_1_W E_V_1_0_S E_H_0_0_E E_V_0_1_N E_H_1_1_W E_V_1_0_S E_H_0_0_E E_V_0_1_N E_H_1_1_W E_V_1_0_S"/>
+    <route id="loop_0_1_ccw" edges="E_V_0_1_N E_H_1_1_E E_V_1_2_S E_H_0_2_W E_V_0_1_N E_H_1_1_E E_V_1_2_S E_H_0_2_W E_V_0_1_N E_H_1_1_E E_V_1_2_S E_H_0_2_W E_V_0_1_N E_H_1_1_E E_V_1_2_S E_H_0_2_W E_V_0_1_N E_H_1_1_E E_V_1_2_S E_H_0_2_W E_V_0_1_N E_H_1_1_E E_V_1_2_S E_H_0_2_W E_V_0_1_N E_H_1_1_E E_V_1_2_S E_H_0_2_W E_V_0_1_N E_H_1_1_E E_V_1_2_S E_H_0_2_W E_V_0_1_N E_H_1_1_E E_V_1_2_S E_H_0_2_W E_V_0_1_N E_H_1_1_E E_V_1_2_S E_H_0_2_W E_V_0_1_N E_H_1_1_E E_V_1_2_S E_H_0_2_W E_V_0_1_N E_H_1_1_E E_V_1_2_S E_H_0_2_W"/>
+    <vehicle id="car0" type="passenger" route="corridor_row_2" depart="0.0" color="1,1,0"/>
+    <vehicle id="car1" type="truck" route="corridor_row_1" depart="0.0" color="0,1,0"/>
+    <vehicle id="car2" type="passenger" route="corridor_col_1" depart="0.0" color="1,1,0"/>
+    <vehicle id="car3" type="passenger" route="corridor_col_2" depart="0.1" color="1,1,0"/>
+    <vehicle id="car4" type="passenger" route="corridor_row_0" depart="0.1" color="1,1,0"/>
+    <vehicle id="car5" type="passenger" route="corridor_row_3" depart="0.1" color="1,1,0"/>
+    <vehicle id="car6" type="passenger" route="corridor_col_0" depart="0.1" color="1,1,0"/>
+    <vehicle id="car7" type="truck" route="corridor_col_3" depart="0.1" color="0,1,0"/>
+    <vehicle id="car8" type="passenger" route="loop_1_1_ccw" depart="0.2" color="1,1,0"/>
+    <vehicle id="car9" type="truck" route="loop_0_2_ccw" depart="0.2" color="0,1,0"/>
+    <vehicle id="car10" type="passenger" route="loop_0_0_cw" depart="0.2" color="1,1,0"/>
+    <vehicle id="car11" type="passenger" route="loop_2_2_cw" depart="0.2" color="1,1,0"/>
+    <vehicle id="car12" type="truck" route="loop_1_2_cw" depart="0.2" color="0,1,0"/>
+    <vehicle id="car13" type="bus" route="loop_0_1_ccw" depart="0.3" color="0,0,1"/>
+    <vehicle id="car14" type="passenger" route="loop_1_0_cw" depart="0.3" color="1,1,0"/>
+    <vehicle id="car15" type="passenger" route="loop_2_1_ccw" depart="0.3" color="1,1,0"/>
+    <vehicle id="car16" type="passenger" route="loop_0_1_cw" depart="0.3" color="1,1,0"/>
+    <vehicle id="car17" type="passenger" route="loop_1_2_ccw" depart="0.3" color="1,1,0"/>
+    <vehicle id="car18" type="passenger" route="loop_1_0_ccw" depart="0.4" color="1,1,0"/>
+    <vehicle id="car19" type="truck" route="loop_2_1_cw" depart="0.4" color="0,1,0"/>
+    <vehicle id="car20" type="passenger" route="loop_0_2_cw" depart="0.4" color="1,1,0"/>
+    <vehicle id="car21" type="passenger" route="loop_1_1_cw" depart="0.4" color="1,1,0"/>
+    <vehicle id="car22" type="passenger" route="loop_2_2_ccw" depart="0.4" color="1,1,0"/>
+    <vehicle id="car23" type="bus" route="loop_2_0_cw" depart="0.5" color="0,0,1"/>
+    <vehicle id="car24" type="passenger" route="loop_0_0_ccw" depart="0.5" color="1,1,0"/>
+    <vehicle id="car25" type="passenger" route="loop_2_0_ccw" depart="0.5" color="1,1,0"/>
+    <vehicle id="car26" type="truck" route="loop_1_1_ccw" depart="0.5" color="0,1,0"/>
+    <vehicle id="car27" type="truck" route="loop_0_2_ccw" depart="0.6" color="0,1,0"/>
+    <vehicle id="car28" type="passenger" route="loop_0_0_cw" depart="0.6" color="1,1,0"/>
+    <vehicle id="car29" type="passenger" route="loop_2_2_cw" depart="0.6" color="1,1,0"/>
+    <vehicle id="car30" type="passenger" route="loop_1_2_cw" depart="0.6" color="1,1,0"/>
+    <vehicle id="car31" type="passenger" route="loop_0_1_ccw" depart="0.6" color="1,1,0"/>
+    <vehicle id="car32" type="passenger" route="loop_1_0_cw" depart="0.7" color="1,1,0"/>
+    <vehicle id="car33" type="passenger" route="loop_2_1_ccw" depart="0.7" color="1,1,0"/>
+    <vehicle id="car34" type="passenger" route="loop_0_1_cw" depart="0.7" color="1,1,0"/>
+    <vehicle id="car35" type="passenger" route="loop_1_2_ccw" depart="0.7" color="1,1,0"/>
+    <vehicle id="car36" type="passenger" route="loop_1_0_ccw" depart="0.7" color="1,1,0"/>
+    <vehicle id="car37" type="passenger" route="loop_2_1_cw" depart="0.8" color="1,1,0"/>
+    <vehicle id="car38" type="passenger" route="loop_0_2_cw" depart="0.8" color="1,1,0"/>
+    <vehicle id="car39" type="passenger" route="loop_1_1_cw" depart="0.8" color="1,1,0"/>
+    <vehicle id="car40" type="passenger" route="loop_2_2_ccw" depart="0.8" color="1,1,0"/>
+    <vehicle id="car41" type="truck" route="loop_2_0_cw" depart="0.8" color="0,1,0"/>
+    <vehicle id="car42" type="passenger" route="loop_0_0_ccw" depart="0.9" color="1,1,0"/>
+    <vehicle id="car43" type="passenger" route="loop_2_0_ccw" depart="0.9" color="1,1,0"/>
+    <vehicle id="car44" type="truck" route="loop_1_1_ccw" depart="0.9" color="0,1,0"/>
+    <vehicle id="car45" type="passenger" route="loop_0_2_ccw" depart="0.9" color="1,1,0"/>
+    <vehicle id="car46" type="truck" route="loop_0_0_cw" depart="0.9" color="0,1,0"/>
+    <vehicle id="car47" type="passenger" route="loop_2_2_cw" depart="1.0" color="1,1,0"/>
+    <vehicle id="car48" type="passenger" route="loop_1_2_cw" depart="1.0" color="1,1,0"/>
+    <vehicle id="car49" type="passenger" route="loop_0_1_ccw" depart="1.0" color="1,1,0"/>
+</routes>

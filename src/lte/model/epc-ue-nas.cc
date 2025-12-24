@@ -230,21 +230,16 @@ EpcUeNas::Send(Ptr<Packet> packet, uint16_t protocolNumber)
             uint16_t remotePort = 0;
             if (protocol == UdpL4Protocol::PROT_NUMBER)
             {
-                // Safely skip GPSR POS headers (for GPSR routing compatibility)
-                // Only remove if we have enough bytes and header is valid
-                const uint32_t gpsrTypeSize = gpsr::TypeHeader().GetSerializedSize();
-                const uint32_t gpsrPosSize = gpsr::PositionHeader().GetSerializedSize();
-                
-                if (pCopy->GetSize() >= gpsrTypeSize + gpsrPosSize + 8) // +8 for UDP header
+                // Safely skip GPSR POS headers using GpsrHeaderTag (100% reliable detection)
+                // Only check first fragment (fragmentOffset == 0) to avoid corrupting non-first fragments
+                gpsr::GpsrHeaderTag gpsrTag;
+                if (ipv4Header.GetFragmentOffset() == 0 && 
+                    pCopy->PeekPacketTag(gpsrTag) && gpsrTag.GetType() == gpsr::GPSRTYPE_POS)
                 {
                     gpsr::TypeHeader gpsrTypeHdr;
-                    pCopy->PeekHeader(gpsrTypeHdr);
-                    if (gpsrTypeHdr.IsValid() && gpsrTypeHdr.Get() == gpsr::GPSRTYPE_POS)
-                    {
-                        pCopy->RemoveHeader(gpsrTypeHdr);
-                        gpsr::PositionHeader gpsrPosHdr;
-                        pCopy->RemoveHeader(gpsrPosHdr);
-                    }
+                    pCopy->RemoveHeader(gpsrTypeHdr);
+                    gpsr::PositionHeader gpsrPosHdr;
+                    pCopy->RemoveHeader(gpsrPosHdr);
                 }
                 
                 UdpHeader udpHeader;
@@ -382,21 +377,16 @@ EpcUeNas::Send(Ptr<Packet> packet, uint16_t protocolNumber)
             uint16_t remotePort = 0;
             if (protocol == UdpL4Protocol::PROT_NUMBER)
             {
-                // Safely skip GPSR POS headers (for GPSR routing compatibility)
-                // Only remove if we have enough bytes and header is valid
-                const uint32_t gpsrTypeSize = gpsr::TypeHeader().GetSerializedSize();
-                const uint32_t gpsrPosSize = gpsr::PositionHeader().GetSerializedSize();
-                
-                if (pCopy->GetSize() >= gpsrTypeSize + gpsrPosSize + 8) // +8 for UDP header
+                // Safely skip GPSR POS headers using GpsrHeaderTag (100% reliable detection)
+                // Only check first fragment (fragmentOffset == 0) to avoid corrupting non-first fragments
+                gpsr::GpsrHeaderTag gpsrTag;
+                if (ipv4Header.GetFragmentOffset() == 0 && 
+                    pCopy->PeekPacketTag(gpsrTag) && gpsrTag.GetType() == gpsr::GPSRTYPE_POS)
                 {
                     gpsr::TypeHeader gpsrTypeHdr;
-                    pCopy->PeekHeader(gpsrTypeHdr);
-                    if (gpsrTypeHdr.IsValid() && gpsrTypeHdr.Get() == gpsr::GPSRTYPE_POS)
-                    {
-                        pCopy->RemoveHeader(gpsrTypeHdr);
-                        gpsr::PositionHeader gpsrPosHdr;
-                        pCopy->RemoveHeader(gpsrPosHdr);
-                    }
+                    pCopy->RemoveHeader(gpsrTypeHdr);
+                    gpsr::PositionHeader gpsrPosHdr;
+                    pCopy->RemoveHeader(gpsrPosHdr);
                 }
                 
                 UdpHeader udpHeader;
