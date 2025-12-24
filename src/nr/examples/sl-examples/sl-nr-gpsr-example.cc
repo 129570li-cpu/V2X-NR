@@ -261,7 +261,7 @@ main(int argc, char* argv[])
 {
     // Scenario parameters
     uint16_t interUeDistance = 150; // 150m to force multi-hop (UE0-UE2 = 300m)
-    uint16_t enableSingleFlow = 0; // 0 corresponds to all flows
+    uint16_t enableSingleFlow = 1; // 1 = only unicast flow (flow 1)
 
     // Traffic parameters
     uint32_t udpPacketSize = 200;
@@ -269,7 +269,7 @@ main(int argc, char* argv[])
 
     // Traffic profile parameters
     uint16_t schedTypeConfig = 1;
-    uint16_t dstL2IdConfig = 1;
+    uint16_t dstL2IdConfig = 3;  // 3 = Unicast (flow 1 to unicast, flow 2 to groupcast, flow 3 to broadcast)
     uint16_t priorityConfig = 1;
     uint16_t rriConfig = 2;  // Use 100ms RRI for 4-node scenario
     bool prioToSps = false;
@@ -285,9 +285,9 @@ main(int argc, char* argv[])
     bool testing = false;
 
     // NR parameters
-    uint16_t numerologyBwpSl = 2;
+    uint16_t numerologyBwpSl = 0; // SCS=15kHz (1ms slots) for reduced CPU load
     double centralFrequencyBandSl = 5.89e9; // band n47  TDD //Here band is analogous to channel
-    uint16_t bandwidthBandSl = 400;         // Multiple of 100 KHz; 400 = 40 MHz
+    uint16_t bandwidthBandSl = 100;         // Multiple of 100 KHz; 100 = 10 MHz (typical V2X bandwidth)
     double txPower = 23;                    // dBm
 
     CommandLine cmd(__FILE__);
@@ -341,7 +341,7 @@ main(int argc, char* argv[])
 
     // Create UE nodes - use SUMO trace with up to 400 vehicles
     NodeContainer ueNodeContainer;
-    uint16_t ueNum = 197;  // Maximum nodes from SUMO trace (50s simulation)
+    uint16_t ueNum = 50;  // 50 vehicles from new SUMO trace
     ueNodeContainer.Create(ueNum);
 
     // First, assign initial spread-out positions to all nodes (far from simulation area)
@@ -359,7 +359,7 @@ main(int argc, char* argv[])
     initialMobility.Install(ueNodeContainer);
 
     // Then use Ns2MobilityHelper - it will override positions for departed vehicles
-    std::string mobilityTracePath = "/home/lyh/ns3-nr-v2x/ns-3-dev/src/nr/examples/grid_network_fed/mobility_backup.tcl";
+    std::string mobilityTracePath = "/home/lyh/ns3-nr-v2x/ns-3-dev/src/nr/examples/sumo-small/grid_50veh/mobility.tcl";
     Ns2MobilityHelper ns2Mobility = Ns2MobilityHelper(mobilityTracePath);
     ns2Mobility.Install();  // Install on nodes defined in trace file
 
@@ -384,7 +384,7 @@ main(int argc, char* argv[])
     LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_DEBUG);
     // LogComponentEnable("EpcTftClassifier", LOG_LEVEL_INFO);
     // LogComponentEnable("LteSlTft", LOG_LEVEL_INFO);
-    LogComponentEnable("NrSlUeMac", LOG_LEVEL_INFO);
+    LogComponentEnable("NrSlUeMac", LOG_LEVEL_ERROR);
     LogComponentEnable("SlNrGpsrExample", LOG_LEVEL_INFO);
     // LogComponentEnable("EpcUeNas", LOG_LEVEL_INFO);
     // LogComponentEnable("NrSpectrumPhy", LOG_LEVEL_INFO);
@@ -416,6 +416,8 @@ main(int argc, char* argv[])
                                                      BandwidthPartInfo::V2V_Highway);
     OperationBandInfo bandSl = ccBwpCreator.CreateOperationBandContiguousCc(bandConfSl);
 
+    // Limit interference calculation distance to speed up simulation (default is 1e9 dB = all nodes)
+    Config::SetDefault("ns3::SpectrumChannel::MaxLossDb", DoubleValue(97.0));
     Config::SetDefault("ns3::ThreeGppChannelModel::UpdatePeriod", TimeValue(MilliSeconds(100)));
     nrHelper->SetChannelConditionModelAttribute("UpdatePeriod", TimeValue(MilliSeconds(0)));
     nrHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(false));
@@ -586,7 +588,7 @@ main(int argc, char* argv[])
 
     // Target IP
     Ipv4Address groupAddress4("225.0.0.0"); // use multicast address as destination
-    Ipv4Address unicastAddress4("7.0.1.145");  // node_399's IP (7.0.0.2 + 399 = 7.0.1.145) for SUMO scenario
+    Ipv4Address unicastAddress4("7.0.0.51");  // Node 49's IP (7.0.0.2 + 49 = 7.0.0.51)
 
     /************************** Traffic flows configuration ********************/
     /*
@@ -600,7 +602,7 @@ main(int argc, char* argv[])
     // Create the traffic profiles
     uint32_t dstL2Broadcast = 255;
     uint32_t dstL2Groupcast = 254;
-    uint32_t dstL2Unicast = 197; // IMSI 197 is assigned to node_196 (last node) for 50s SUMO scenario
+    uint32_t dstL2Unicast = 50; // IMSI 50 is assigned to node_49 (last node)
                                // Source L2 ID is the lower bits of the IMSI.
 
     SidelinkInfo slInfo1;
@@ -867,7 +869,7 @@ main(int argc, char* argv[])
         ApplicationContainer serverApps1;
         PacketSinkHelper sidelinkSink1("ns3::UdpSocketFactory", localAddress1);
         sidelinkSink1.SetAttribute("EnableSeqTsSizeHeader", BooleanValue(true));
-        serverApps1 = sidelinkSink1.Install(ueNodeContainer.Get(399));  // node_399 for SUMO
+        serverApps1 = sidelinkSink1.Install(ueNodeContainer.Get(ueNum - 1));  // Node 196 (last node)
         serverApps1.Start(Seconds(2.0));
         allServerApps.Add(serverApps1);
     }

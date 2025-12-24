@@ -1,6 +1,7 @@
 /* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
 /*
  * GPSR Packet Header Implementation
+ * Modified: Use double for coordinates to support negative values
  */
 
 #include "gpsr-packet.h"
@@ -9,6 +10,8 @@
 #include "ns3/log.h"
 #include "ns3/packet.h"
 
+#include <cstring>
+
 namespace ns3
 {
 
@@ -16,6 +19,23 @@ NS_LOG_COMPONENT_DEFINE("GpsrPacket");
 
 namespace gpsr
 {
+
+// Helper functions for serializing double as uint64_t (bit-level, preserves sign and precision)
+static uint64_t
+DoubleToUint64(double val)
+{
+    uint64_t result;
+    std::memcpy(&result, &val, sizeof(double));
+    return result;
+}
+
+static double
+Uint64ToDouble(uint64_t val)
+{
+    double result;
+    std::memcpy(&result, &val, sizeof(double));
+    return result;
+}
 
 NS_OBJECT_ENSURE_REGISTERED(TypeHeader);
 
@@ -107,7 +127,7 @@ operator<<(std::ostream& os, const TypeHeader& h)
 
 NS_OBJECT_ENSURE_REGISTERED(HelloHeader);
 
-HelloHeader::HelloHeader(uint64_t originPosx, uint64_t originPosy)
+HelloHeader::HelloHeader(double originPosx, double originPosy)
     : m_originPosx(originPosx),
       m_originPosy(originPosy)
 {
@@ -130,22 +150,22 @@ HelloHeader::GetInstanceTypeId() const
 uint32_t
 HelloHeader::GetSerializedSize() const
 {
-    return 16; // 2 * uint64_t
+    return 16; // 2 * sizeof(double) = 2 * 8 = 16
 }
 
 void
 HelloHeader::Serialize(Buffer::Iterator i) const
 {
-    i.WriteHtonU64(m_originPosx);
-    i.WriteHtonU64(m_originPosy);
+    i.WriteHtonU64(DoubleToUint64(m_originPosx));
+    i.WriteHtonU64(DoubleToUint64(m_originPosy));
 }
 
 uint32_t
 HelloHeader::Deserialize(Buffer::Iterator start)
 {
     Buffer::Iterator i = start;
-    m_originPosx = i.ReadNtohU64();
-    m_originPosy = i.ReadNtohU64();
+    m_originPosx = Uint64ToDouble(i.ReadNtohU64());
+    m_originPosy = Uint64ToDouble(i.ReadNtohU64());
     uint32_t dist = i.GetDistanceFrom(start);
     NS_ASSERT(dist == GetSerializedSize());
     return dist;
@@ -174,14 +194,14 @@ operator<<(std::ostream& os, const HelloHeader& h)
 
 NS_OBJECT_ENSURE_REGISTERED(PositionHeader);
 
-PositionHeader::PositionHeader(uint64_t dstPosx,
-                               uint64_t dstPosy,
+PositionHeader::PositionHeader(double dstPosx,
+                               double dstPosy,
                                uint32_t updated,
-                               uint64_t recPosx,
-                               uint64_t recPosy,
+                               double recPosx,
+                               double recPosy,
                                uint8_t inRec,
-                               uint64_t lastPosx,
-                               uint64_t lastPosy)
+                               double lastPosx,
+                               double lastPosy)
     : m_dstPosx(dstPosx),
       m_dstPosy(dstPosy),
       m_updated(updated),
@@ -210,34 +230,35 @@ PositionHeader::GetInstanceTypeId() const
 uint32_t
 PositionHeader::GetSerializedSize() const
 {
-    return 53; // 6*uint64_t + uint32_t + uint8_t
+    // 6 * sizeof(double) + sizeof(uint32_t) + sizeof(uint8_t) = 6*8 + 4 + 1 = 53
+    return 53;
 }
 
 void
 PositionHeader::Serialize(Buffer::Iterator i) const
 {
-    i.WriteHtonU64(m_dstPosx);
-    i.WriteHtonU64(m_dstPosy);
+    i.WriteHtonU64(DoubleToUint64(m_dstPosx));
+    i.WriteHtonU64(DoubleToUint64(m_dstPosy));
     i.WriteHtonU32(m_updated);
-    i.WriteHtonU64(m_recPosx);
-    i.WriteHtonU64(m_recPosy);
+    i.WriteHtonU64(DoubleToUint64(m_recPosx));
+    i.WriteHtonU64(DoubleToUint64(m_recPosy));
     i.WriteU8(m_inRec);
-    i.WriteHtonU64(m_lastPosx);
-    i.WriteHtonU64(m_lastPosy);
+    i.WriteHtonU64(DoubleToUint64(m_lastPosx));
+    i.WriteHtonU64(DoubleToUint64(m_lastPosy));
 }
 
 uint32_t
 PositionHeader::Deserialize(Buffer::Iterator start)
 {
     Buffer::Iterator i = start;
-    m_dstPosx = i.ReadNtohU64();
-    m_dstPosy = i.ReadNtohU64();
+    m_dstPosx = Uint64ToDouble(i.ReadNtohU64());
+    m_dstPosy = Uint64ToDouble(i.ReadNtohU64());
     m_updated = i.ReadNtohU32();
-    m_recPosx = i.ReadNtohU64();
-    m_recPosy = i.ReadNtohU64();
+    m_recPosx = Uint64ToDouble(i.ReadNtohU64());
+    m_recPosy = Uint64ToDouble(i.ReadNtohU64());
     m_inRec = i.ReadU8();
-    m_lastPosx = i.ReadNtohU64();
-    m_lastPosy = i.ReadNtohU64();
+    m_lastPosx = Uint64ToDouble(i.ReadNtohU64());
+    m_lastPosy = Uint64ToDouble(i.ReadNtohU64());
     uint32_t dist = i.GetDistanceFrom(start);
     NS_ASSERT(dist == GetSerializedSize());
     return dist;

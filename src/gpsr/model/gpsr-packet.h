@@ -1,6 +1,7 @@
 /* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
 /*
  * GPSR Packet Header Definitions
+ * Modified: Use double for coordinates to support negative values
  */
 
 #ifndef GPSR_PACKET_H
@@ -64,11 +65,12 @@ std::ostream& operator<<(std::ostream& os, const TypeHeader& h);
 /**
  * \ingroup gpsr
  * \brief GPSR Hello Header
+ * Uses double for coordinates to support negative values and decimals
  */
 class HelloHeader : public Header
 {
   public:
-    HelloHeader(uint64_t originPosx = 0, uint64_t originPosy = 0);
+    HelloHeader(double originPosx = 0.0, double originPosy = 0.0);
 
     static TypeId GetTypeId();
     TypeId GetInstanceTypeId() const override;
@@ -77,22 +79,22 @@ class HelloHeader : public Header
     uint32_t Deserialize(Buffer::Iterator start) override;
     void Print(std::ostream& os) const override;
 
-    void SetOriginPosx(uint64_t posx)
+    void SetOriginPosx(double posx)
     {
         m_originPosx = posx;
     }
 
-    uint64_t GetOriginPosx() const
+    double GetOriginPosx() const
     {
         return m_originPosx;
     }
 
-    void SetOriginPosy(uint64_t posy)
+    void SetOriginPosy(double posy)
     {
         m_originPosy = posy;
     }
 
-    uint64_t GetOriginPosy() const
+    double GetOriginPosy() const
     {
         return m_originPosy;
     }
@@ -100,8 +102,8 @@ class HelloHeader : public Header
     bool operator==(const HelloHeader& o) const;
 
   private:
-    uint64_t m_originPosx;
-    uint64_t m_originPosy;
+    double m_originPosx;
+    double m_originPosy;
 };
 
 std::ostream& operator<<(std::ostream& os, const HelloHeader& h);
@@ -109,18 +111,19 @@ std::ostream& operator<<(std::ostream& os, const HelloHeader& h);
 /**
  * \ingroup gpsr
  * \brief GPSR Position Header
+ * Uses double for coordinates to support negative values and decimals
  */
 class PositionHeader : public Header
 {
   public:
-    PositionHeader(uint64_t dstPosx = 0,
-                   uint64_t dstPosy = 0,
+    PositionHeader(double dstPosx = 0.0,
+                   double dstPosy = 0.0,
                    uint32_t updated = 0,
-                   uint64_t recPosx = 0,
-                   uint64_t recPosy = 0,
+                   double recPosx = 0.0,
+                   double recPosy = 0.0,
                    uint8_t inRec = 0,
-                   uint64_t lastPosx = 0,
-                   uint64_t lastPosy = 0);
+                   double lastPosx = 0.0,
+                   double lastPosy = 0.0);
 
     static TypeId GetTypeId();
     TypeId GetInstanceTypeId() const override;
@@ -129,22 +132,22 @@ class PositionHeader : public Header
     uint32_t Deserialize(Buffer::Iterator start) override;
     void Print(std::ostream& os) const override;
 
-    void SetDstPosx(uint64_t posx)
+    void SetDstPosx(double posx)
     {
         m_dstPosx = posx;
     }
 
-    uint64_t GetDstPosx() const
+    double GetDstPosx() const
     {
         return m_dstPosx;
     }
 
-    void SetDstPosy(uint64_t posy)
+    void SetDstPosy(double posy)
     {
         m_dstPosy = posy;
     }
 
-    uint64_t GetDstPosy() const
+    double GetDstPosy() const
     {
         return m_dstPosy;
     }
@@ -159,22 +162,22 @@ class PositionHeader : public Header
         return m_updated;
     }
 
-    void SetRecPosx(uint64_t posx)
+    void SetRecPosx(double posx)
     {
         m_recPosx = posx;
     }
 
-    uint64_t GetRecPosx() const
+    double GetRecPosx() const
     {
         return m_recPosx;
     }
 
-    void SetRecPosy(uint64_t posy)
+    void SetRecPosy(double posy)
     {
         m_recPosy = posy;
     }
 
-    uint64_t GetRecPosy() const
+    double GetRecPosy() const
     {
         return m_recPosy;
     }
@@ -189,22 +192,22 @@ class PositionHeader : public Header
         return m_inRec;
     }
 
-    void SetLastPosx(uint64_t posx)
+    void SetLastPosx(double posx)
     {
         m_lastPosx = posx;
     }
 
-    uint64_t GetLastPosx() const
+    double GetLastPosx() const
     {
         return m_lastPosx;
     }
 
-    void SetLastPosy(uint64_t posy)
+    void SetLastPosy(double posy)
     {
         m_lastPosy = posy;
     }
 
-    uint64_t GetLastPosy() const
+    double GetLastPosy() const
     {
         return m_lastPosy;
     }
@@ -212,14 +215,14 @@ class PositionHeader : public Header
     bool operator==(const PositionHeader& o) const;
 
   private:
-    uint64_t m_dstPosx;
-    uint64_t m_dstPosy;
+    double m_dstPosx;
+    double m_dstPosy;
     uint32_t m_updated;
-    uint64_t m_recPosx;
-    uint64_t m_recPosy;
+    double m_recPosx;
+    double m_recPosy;
     uint8_t m_inRec;
-    uint64_t m_lastPosx;
-    uint64_t m_lastPosy;
+    double m_lastPosx;
+    double m_lastPosy;
 };
 
 std::ostream& operator<<(std::ostream& os, const PositionHeader& h);

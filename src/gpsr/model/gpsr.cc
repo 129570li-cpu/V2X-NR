@@ -273,7 +273,7 @@ RoutingProtocol::SendHello()
         Ptr<Socket> socket = s.first;
         Ipv4InterfaceAddress iface = s.second;
 
-        HelloHeader helloHeader((uint64_t)pos.x, (uint64_t)pos.y);
+        HelloHeader helloHeader(pos.x, pos.y);
 
         Ptr<Packet> packet = Create<Packet>();
         packet->AddHeader(helloHeader);
@@ -804,8 +804,8 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
         PositionHeader posHeader(Position.x,
                                  Position.y,
                                  updated,
-                                 (uint64_t)0,
-                                 (uint64_t)0,
+                                 0.0,
+                                 0.0,
                                  (uint8_t)0,
                                  myPos.x,
                                  myPos.y);
@@ -959,14 +959,14 @@ RoutingProtocol::DeferredRouteOutput(Ptr<const Packet> p,
         uint32_t updated = (uint32_t)m_locationService->GetEntryUpdateTime(dst).GetSeconds();
 
         // Add position header (not in recovery mode initially)
-        PositionHeader posHeader((uint64_t)dstPos.x,
-                                 (uint64_t)dstPos.y,
+        PositionHeader posHeader(dstPos.x,
+                                 dstPos.y,
                                  updated,
-                                 (uint64_t)0,
-                                 (uint64_t)0,
+                                 0.0,
+                                 0.0,
                                  (uint8_t)0,
-                                 (uint64_t)myPos.x,
-                                 (uint64_t)myPos.y);
+                                 myPos.x,
+                                 myPos.y);
         packet->AddHeader(posHeader);
         TypeHeader tHeader(GPSRTYPE_POS);
         packet->AddHeader(tHeader);
@@ -1158,26 +1158,26 @@ RoutingProtocol::AddHeaders(Ptr<Packet> p,
         nextHop = m_neighbors.BestNeighbor(m_locationService->GetPosition(destination), myPos);
     }
 
-    uint64_t positionX = 0;
-    uint64_t positionY = 0;
+    double positionX = 0.0;
+    double positionY = 0.0;
     uint32_t hdrTime = 0;
 
     if (destination != m_ipv4->GetAddress(1, 0).GetBroadcast())
     {
         Vector dstPos = m_locationService->GetPosition(destination);
-        positionX = (uint64_t)dstPos.x;
-        positionY = (uint64_t)dstPos.y;
+        positionX = dstPos.x;
+        positionY = dstPos.y;
         hdrTime = (uint32_t)m_locationService->GetEntryUpdateTime(destination).GetSeconds();
     }
 
     PositionHeader posHeader(positionX,
                              positionY,
                              hdrTime,
-                             (uint64_t)0,
-                             (uint64_t)0,
+                             0.0,
+                             0.0,
                              (uint8_t)0,
-                             (uint64_t)myPos.x,
-                             (uint64_t)myPos.y);
+                             myPos.x,
+                             myPos.y);
     p->AddHeader(posHeader);
     TypeHeader tHeader(GPSRTYPE_POS);
     p->AddHeader(tHeader);
