@@ -293,6 +293,98 @@ class GpsrHeaderTag : public Tag
     MessageType m_type;
 };
 
+/**
+ * \ingroup gpsr
+ * \brief Tag to pass next-hop information from GPSR to EpcUeNas
+ * 
+ * This tag is used internally within a node to communicate the GPSR-selected
+ * next-hop IP address to the NAS layer for correct TFT matching in NR Sidelink.
+ * It also carries TTL for hop counting.
+ */
+class GpsrNextHopTag : public Tag
+{
+  public:
+    GpsrNextHopTag()
+        : m_nextHop(Ipv4Address::GetAny()),
+          m_ttl(64)
+    {
+    }
+
+    GpsrNextHopTag(Ipv4Address nextHop, uint8_t ttl = 64)
+        : m_nextHop(nextHop),
+          m_ttl(ttl)
+    {
+    }
+
+    static TypeId GetTypeId()
+    {
+        static TypeId tid = TypeId("ns3::gpsr::GpsrNextHopTag")
+                                .SetParent<Tag>()
+                                .SetGroupName("Gpsr")
+                                .AddConstructor<GpsrNextHopTag>();
+        return tid;
+    }
+
+    TypeId GetInstanceTypeId() const override
+    {
+        return GetTypeId();
+    }
+
+    uint32_t GetSerializedSize() const override
+    {
+        return 4 + 1;  // IPv4 address (4 bytes) + TTL (1 byte)
+    }
+
+    void Serialize(TagBuffer i) const override
+    {
+        i.WriteU32(m_nextHop.Get());
+        i.WriteU8(m_ttl);
+    }
+
+    void Deserialize(TagBuffer i) override
+    {
+        m_nextHop = Ipv4Address(i.ReadU32());
+        m_ttl = i.ReadU8();
+    }
+
+    void Print(std::ostream& os) const override
+    {
+        os << "GpsrNextHopTag nextHop=" << m_nextHop << " ttl=" << (int)m_ttl;
+    }
+
+    Ipv4Address GetNextHop() const
+    {
+        return m_nextHop;
+    }
+
+    void SetNextHop(Ipv4Address nextHop)
+    {
+        m_nextHop = nextHop;
+    }
+
+    uint8_t GetTtl() const
+    {
+        return m_ttl;
+    }
+
+    void SetTtl(uint8_t ttl)
+    {
+        m_ttl = ttl;
+    }
+
+    void DecrementTtl()
+    {
+        if (m_ttl > 0)
+        {
+            m_ttl--;
+        }
+    }
+
+  private:
+    Ipv4Address m_nextHop;
+    uint8_t m_ttl;
+};
+
 } // namespace gpsr
 } // namespace ns3
 

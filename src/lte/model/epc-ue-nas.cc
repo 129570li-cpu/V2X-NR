@@ -34,6 +34,9 @@
 #include <ns3/ipv6-header.h>
 #include <ns3/ipv6-l3-protocol.h>
 #include <ns3/log.h>
+#include <iostream>
+#include <unistd.h>
+#include <cstring>
 #include <ns3/simulator.h>
 
 namespace ns3
@@ -222,6 +225,24 @@ EpcUeNas::Send(Ptr<Packet> packet, uint16_t protocolNumber)
     {
     case ACTIVE: {
         Ptr<Packet> pCopy = packet->Copy();
+        
+        // DEBUG: Check if GpsrNextHopTag is present on incoming packet
+        gpsr::GpsrNextHopTag debugNhTag;
+        bool hasNhTag = pCopy->PeekPacketTag(debugNhTag);
+        
+        // DEBUG: Output to stderr (now redirected to log file)
+        std::cerr << "[TAG-CHECK] EpcUeNas::Send UID=" << packet->GetUid()
+                  << " hasGpsrNextHopTag=" << hasNhTag;
+        if (hasNhTag) {
+            std::cerr << " nextHop=" << debugNhTag.GetNextHop() 
+                      << " TTL=" << (int)debugNhTag.GetTtl();
+        }
+        std::cerr << std::endl;
+        
+        NS_LOG_INFO("EpcUeNas::Send: packet UID=" << packet->GetUid() 
+                     << " hasGpsrNextHopTag=" << hasNhTag 
+                     << (hasNhTag ? " nextHop=" : "")
+                     << (hasNhTag ? debugNhTag.GetNextHop() : Ipv4Address::GetZero()));
         if (protocolNumber == Ipv4L3Protocol::PROT_NUMBER)
         {
             Ipv4Header ipv4Header;
@@ -255,14 +276,29 @@ EpcUeNas::Send(Ptr<Packet> packet, uint16_t protocolNumber)
             }
             // First Check if there is any sidelink bearer for the destination
             // otherwise it may use the default bearer, if exists
+            
+            // FIX: For GPSR-routed packets, use the next-hop IP (from GpsrNextHopTag) for TFT matching
+            // This ensures packets are sent to the GPSR-selected next-hop, not the final destination
+            Ipv4Address tftMatchAddr = ipv4Header.GetDestination();
+            gpsr::GpsrNextHopTag nhTag;
+            if (protocol == UdpL4Protocol::PROT_NUMBER &&
+                pCopy->PeekPacketTag(nhTag) && nhTag.GetNextHop() != Ipv4Address::GetAny())
+            {
+                tftMatchAddr = nhTag.GetNextHop();
+                NS_LOG_INFO("GPSR NextHop override: using " << tftMatchAddr 
+                            << " instead of " << ipv4Header.GetDestination()
+                            << " (TTL=" << (int)nhTag.GetTtl() << ")");
+            }
+            
             for (auto it = m_slBearersActivatedList.begin(); it != m_slBearersActivatedList.end();
                  it++)
             {
-                if ((*it)->Matches(ipv4Header.GetDestination(), remotePort))
+                if ((*it)->Matches(tftMatchAddr, remotePort))
                 {
                     // Found sidelink
-                    NS_LOG_INFO("Found matching TFT for "
-                                << ipv4Header.GetDestination() << ":" << remotePort
+                    NS_LOG_INFO("<<< UNIQUEMARKER >>> Executing EpcUeNas::Send logic");
+                    NS_LOG_INFO("Found matching TFT [MODIFIED] for "
+                                << tftMatchAddr << ":" << remotePort
                                 << " with dstL2Id " << (*it)->GetSidelinkInfo().m_dstL2Id
                                 << " LC ID " << +(*it)->GetSidelinkInfo().m_lcId);
                     m_asSapProvider->SendSidelinkData(packet,
@@ -273,24 +309,25 @@ EpcUeNas::Send(Ptr<Packet> packet, uint16_t protocolNumber)
                 else
                 {
                     NS_LOG_DEBUG("TFT is not a match for "
-                                 << ipv4Header.GetDestination() << ":" << remotePort
+                                 << tftMatchAddr << ":" << remotePort
                                  << " ; bearer has dstL2Id " << (*it)->GetSidelinkInfo().m_dstL2Id
                                  << " LC ID " << +(*it)->GetSidelinkInfo().m_lcId);
                 }
             }
             // check if pending
+            // FIX: Use tftMatchAddr (which may be next-hop for GPSR) instead of final destination
             for (auto it = m_pendingSlBearersList.begin(); it != m_pendingSlBearersList.end(); it++)
             {
-                if ((*it)->Matches(ipv4Header.GetDestination(), remotePort))
+                if ((*it)->Matches(tftMatchAddr, remotePort))
                 {
-                    NS_LOG_WARN("Matching sidelink bearer still pending, discarding packet");
-                    // TODO: Add drop trace?
+                    NS_LOG_WARN("Matching sidelink bearer still pending for " << tftMatchAddr 
+                               << ", discarding packet");
                     return false;
                 }
                 else
                 {
                     NS_LOG_DEBUG("Pending bearer is not a match for "
-                                 << ipv4Header.GetDestination() << ":" << remotePort
+                                 << tftMatchAddr << ":" << remotePort
                                  << " ; bearer has dstL2Id " << (*it)->GetSidelinkInfo().m_dstL2Id
                                  << " LC ID " << +(*it)->GetSidelinkInfo().m_lcId);
                 }
@@ -400,14 +437,28 @@ EpcUeNas::Send(Ptr<Packet> packet, uint16_t protocolNumber)
                 pCopy->RemoveHeader(tcpHeader);
                 remotePort = tcpHeader.GetDestinationPort();
             }
+            
+            // FIX: For GPSR-routed packets, use the next-hop IP (from GpsrNextHopTag) for TFT matching
+            // This ensures packets are sent to the GPSR-selected next-hop, not the final destination
+            Ipv4Address tftMatchAddr = ipv4Header.GetDestination();
+            gpsr::GpsrNextHopTag nhTag;
+            if (protocol == UdpL4Protocol::PROT_NUMBER &&
+                pCopy->PeekPacketTag(nhTag) && nhTag.GetNextHop() != Ipv4Address::GetAny())
+            {
+                tftMatchAddr = nhTag.GetNextHop();
+                NS_LOG_INFO("OFF branch GPSR NextHop override: using " << tftMatchAddr 
+                            << " instead of " << ipv4Header.GetDestination()
+                            << " (TTL=" << (int)nhTag.GetTtl() << ")");
+            }
+            
             for (auto it = m_slBearersActivatedList.begin(); it != m_slBearersActivatedList.end();
                  it++)
             {
-                if ((*it)->Matches(ipv4Header.GetDestination(), remotePort))
+                if ((*it)->Matches(tftMatchAddr, remotePort))
                 {
                     // Found sidelink
-                    NS_LOG_INFO("Found matching TFT for "
-                                << ipv4Header.GetDestination() << ":" << remotePort
+                    NS_LOG_INFO("Found matching TFT [OFF-MODIFIED] for "
+                                << tftMatchAddr << ":" << remotePort
                                 << " with dstL2Id " << (*it)->GetSidelinkInfo().m_dstL2Id
                                 << " LC ID " << +(*it)->GetSidelinkInfo().m_lcId);
                     m_asSapProvider->SendSidelinkData(packet,
@@ -418,7 +469,7 @@ EpcUeNas::Send(Ptr<Packet> packet, uint16_t protocolNumber)
                 else
                 {
                     NS_LOG_DEBUG("Did not find matching TFT for "
-                                 << ipv4Header.GetDestination() << ":" << remotePort
+                                 << tftMatchAddr << ":" << remotePort
                                  << " bearer dstL2Id " << (*it)->GetSidelinkInfo().m_dstL2Id
                                  << " LC ID " << +(*it)->GetSidelinkInfo().m_lcId);
                 }

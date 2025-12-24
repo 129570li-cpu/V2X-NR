@@ -909,6 +909,31 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
         route->SetOutputDevice(m_ipv4->GetNetDevice(1));
 
         NS_LOG_LOGIC("Forwarding to " << dst << " from " << origin << " via " << nextHop);
+        
+        // Add GpsrNextHopTag to pass next-hop info to EpcUeNas for TFT matching
+        GpsrNextHopTag existingNhTag;
+        if (p->PeekPacketTag(existingNhTag))
+        {
+            // FIX: Drop packet if TTL has reached 0 (loop prevention)
+            uint8_t ttl = existingNhTag.GetTtl();
+            if (ttl == 0)
+            {
+                NS_LOG_DEBUG("GpsrNextHopTag TTL=0, dropping packet to prevent loop");
+                return true;  // Silent drop - packet handled (consumed), no error callback
+            }
+            // Decrement TTL and update next-hop
+            p->RemovePacketTag(existingNhTag);
+            GpsrNextHopTag nhTag(nextHop, ttl - 1);
+            p->AddPacketTag(nhTag);
+            NS_LOG_DEBUG("Updated GpsrNextHopTag: nextHop=" << nextHop << " ttl=" << (int)(ttl - 1));
+        }
+        else
+        {
+            GpsrNextHopTag nhTag(nextHop, 63);  // First forward, TTL=63
+            p->AddPacketTag(nhTag);
+            NS_LOG_DEBUG("Added GpsrNextHopTag: nextHop=" << nextHop << " ttl=63");
+        }
+        
         ucb(route, p, header);
         return true;
     }
@@ -1024,6 +1049,30 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
     route->SetOutputDevice(m_ipv4->GetNetDevice(1));
 
     NS_LOG_LOGIC("Recovery forwarding to " << dst << " via " << nextHop);
+    
+    // Add GpsrNextHopTag to pass next-hop info to EpcUeNas for TFT matching
+    GpsrNextHopTag existingNhTag;
+    if (p->PeekPacketTag(existingNhTag))
+    {
+        // FIX: Drop packet if TTL has reached 0 (loop prevention)
+        uint8_t ttl = existingNhTag.GetTtl();
+        if (ttl == 0)
+        {
+            NS_LOG_DEBUG("RecoveryMode: GpsrNextHopTag TTL=0, dropping packet to prevent loop");
+            return;  // Drop the packet
+        }
+        p->RemovePacketTag(existingNhTag);
+        GpsrNextHopTag nhTag(nextHop, ttl - 1);
+        p->AddPacketTag(nhTag);
+        NS_LOG_DEBUG("RecoveryMode: Updated GpsrNextHopTag: nextHop=" << nextHop << " ttl=" << (int)(ttl - 1));
+    }
+    else
+    {
+        GpsrNextHopTag nhTag(nextHop, 63);
+        p->AddPacketTag(nhTag);
+        NS_LOG_DEBUG("RecoveryMode: Added GpsrNextHopTag: nextHop=" << nextHop << " ttl=63");
+    }
+    
     ucb(route, p, header);
 }
 
@@ -1266,6 +1315,28 @@ RoutingProtocol::SendPacketFromQueue(Ipv4Address dst)
         // Packets in queue already have GPSR headers from DeferredRouteOutput
         // Use m_downTarget directly instead of ucb to avoid re-adding headers
         header.SetTtl(header.GetTtl() > 0 ? header.GetTtl() - 1 : 64);
+        
+        // Add/Update GpsrNextHopTag with the calculated next-hop
+        GpsrNextHopTag existingNhTag;
+        if (p->PeekPacketTag(existingNhTag))
+        {
+            // FIX: Drop packet if TTL has reached 0 (loop prevention)
+            uint8_t ttl = existingNhTag.GetTtl();
+            if (ttl == 0)
+            {
+                NS_LOG_DEBUG("SendPacketFromQueue: GpsrNextHopTag TTL=0, dropping packet");
+                continue;  // Skip this packet, process next in queue
+            }
+            p->RemovePacketTag(existingNhTag);
+            GpsrNextHopTag nhTag(nextHop, ttl - 1);
+            p->AddPacketTag(nhTag);
+        }
+        else
+        {
+            GpsrNextHopTag nhTag(nextHop, 64);
+            p->AddPacketTag(nhTag);
+        }
+        
         m_downTarget(p, header.GetSource(), header.GetDestination(), header.GetProtocol(), route);
     }
 
@@ -1299,14 +1370,24 @@ RoutingProtocol::AddHeaders(Ptr<Packet> p,
     Ptr<MobilityModel> mm = m_ipv4->GetObject<MobilityModel>();
     Vector myPos = mm->GetPosition();
 
-    Ipv4Address nextHop;
-    if (m_neighbors.IsNeighbour(destination))
+    // FIX: Use route->GetGateway() instead of recalculating nextHop
+    // This ensures consistency with the routing decision made in RouteOutput()
+    // If route is null or gateway is zero, fall back to recalculating
+    Ipv4Address nextHop = Ipv4Address::GetZero();
+    if (route && route->GetGateway() != Ipv4Address::GetZero())
+    {
+        nextHop = route->GetGateway();
+        NS_LOG_DEBUG("AddHeaders: using route gateway " << nextHop);
+    }
+    else if (m_neighbors.IsNeighbour(destination))
     {
         nextHop = destination;
+        NS_LOG_DEBUG("AddHeaders: destination is neighbor, using " << nextHop);
     }
     else
     {
         nextHop = m_neighbors.BestNeighbor(m_locationService->GetPosition(destination), myPos);
+        NS_LOG_DEBUG("AddHeaders: calculated best neighbor " << nextHop);
     }
 
     double positionX = 0.0;
@@ -1340,7 +1421,23 @@ RoutingProtocol::AddHeaders(Ptr<Packet> p,
         p->AddPacketTag(tag);
     }
     
-    NS_LOG_DEBUG("Added GPSR headers and tag to packet " << p->GetUid());
+    // Add GpsrNextHopTag to pass next-hop info to EpcUeNas for TFT matching
+    // Remove any existing tag first (in case of re-routing)
+    GpsrNextHopTag existingNhTag;
+    if (p->PeekPacketTag(existingNhTag))
+    {
+        p->RemovePacketTag(existingNhTag);
+    }
+    GpsrNextHopTag nhTag(nextHop, 64);  // Default TTL = 64
+    p->AddPacketTag(nhTag);
+    
+    // DEBUG: Verify tag was added successfully
+    GpsrNextHopTag verifyTag;
+    bool hasNhTag = p->PeekPacketTag(verifyTag);
+    NS_LOG_DEBUG("AddHeaders: packet UID=" << p->GetUid() 
+                 << " nextHop=" << nextHop 
+                 << " tagAdded=" << hasNhTag 
+                 << " verifyNextHop=" << (hasNhTag ? verifyTag.GetNextHop() : Ipv4Address::GetZero()));
 
     // Send the packet with headers via the IP layer's down target
     // m_downTarget must be configured by calling GpsrHelper::Install() after InternetStackHelper

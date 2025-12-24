@@ -382,19 +382,21 @@ main(int argc, char* argv[])
     }
     
     LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_DEBUG);
-    LogComponentEnable("EpcTftClassifier", LOG_LEVEL_INFO);
-    LogComponentEnable("LteSlTft", LOG_LEVEL_INFO);
-    LogComponentEnable("NrSlUeMac", LOG_LEVEL_ERROR);
+    //LogComponentEnable("EpcTftClassifier", LOG_LEVEL_INFO);
+    //LogComponentEnable("LteSlTft", LOG_LEVEL_INFO);
+    LogComponentEnable("NrSlUeMac", LOG_LEVEL_INFO);
     LogComponentEnable("SlNrGpsrExample", LOG_LEVEL_INFO);
-    LogComponentEnable("EpcUeNas", LOG_LEVEL_INFO);
-    // LogComponentEnable("NrSpectrumPhy", LOG_LEVEL_INFO);
+    LogComponentEnable("EpcUeNas", LOG_LEVEL_DEBUG);
+    //LogComponentEnable("NrSpectrumPhy", LOG_LEVEL_INFO);
     LogComponentEnableAll(LOG_PREFIX_TIME);
     LogComponentEnableAll(LOG_PREFIX_NODE);
     LogComponentEnableAll(LOG_PREFIX_FUNC);
     
-    // Redirect log output to file
+    // Redirect log output to file (clog for NS_LOG, cerr for std::cerr markers)
     std::clog.rdbuf(logFile.rdbuf());
+    std::cerr.rdbuf(logFile.rdbuf());
     NS_LOG_INFO("=== SL-NR-GPSR Example Debug Log Started ===");
+    std::cerr << "[CERR-TEST] std::cerr redirect test from main()" << std::endl;
     Ptr<NrPointToPointEpcHelper> epcHelper = CreateObject<NrPointToPointEpcHelper>();
     epcHelper->SetAttribute("S1uLinkDelay", TimeValue(MilliSeconds(0)));
     Ptr<NrHelper> nrHelper = CreateObject<NrHelper>();
@@ -791,24 +793,56 @@ main(int argc, char* argv[])
         slInfoNode.m_pdb = pdb;
         slInfoNode.m_priority = 1;
         
-        // Create TFT: nodeIp → l2Id (port 0 matches all ports)
-        Ptr<LteSlTft> tftNode = Create<LteSlTft>(LteSlTft::Direction::BIDIRECTIONAL, 
-                                                  nodeIp, 0, slInfoNode);
+        // Create TFT: nodeIp → l2Id (no port = wildcard port matching)
+        // FIX: Configure as TRANSMIT-only so nodes can send to any destination
+        // based on IP, but do NOT listen to all L2 IDs (prevents broadcast storm).
+        // IMPORTANT: Use 3-arg constructor (no port) so m_hasRemotePort=false
+        Ptr<LteSlTft> tftNode = Create<LteSlTft>(LteSlTft::Direction::TRANSMIT, 
+                                                  nodeIp, slInfoNode);
         nrSlHelper->ActivateNrSlBearer(Seconds(0), ueNetDev, tftNode);
+        
+        // FIX: Configure RECEIVE-only bearer solely for the node's own L2 ID.
+        // This ensures each node only receives unicast traffic destined for itself.
+        // We must activate this ONLY on the specific node 'i'.
+        SidelinkInfo slInfoSelfRx = slInfoNode;
+        slInfoSelfRx.m_dstL2Id = l2Id; // Listen to own L2 ID
+        Ptr<LteSlTft> tftSelfRx = Create<LteSlTft>(LteSlTft::Direction::RECEIVE, 
+                                                   nodeIp, slInfoSelfRx);
+        // Activate ONLY on node 'i'
+        nrSlHelper->ActivateNrSlBearer(Seconds(0), NetDeviceContainer(ueNetDev.Get(i)), tftSelfRx);
     }
     NS_LOG_INFO("TFT mappings created for all " << ueNum << " nodes.");
     // ========== End of Complete TFT mapping ==========
 
     if (!enableSingleFlow || enableSingleFlow == 1)
     {
-        nrSlHelper->ActivateNrSlBearer(finalSlBearersActivationTime, ueNetDev, tft1);
+        // FIX: Only activate application flow bearers on endpoints, not all UEs
+        // Source node (node 0, IMSI 1): TRANSMIT only
+        // Destination node (node 49, IMSI 50): RECEIVE only
+        // This prevents intermediate nodes from establishing application-level RX/TX
+        
+        // Source: Node 0 - TRANSMIT only
+        SidelinkInfo slInfoTx = slInfo1;
+        Ptr<LteSlTft> tft1Tx = Create<LteSlTft>(LteSlTft::Direction::TRANSMIT, 
+                                                 unicastAddress4, port1, slInfoTx);
+        nrSlHelper->ActivateNrSlBearer(finalSlBearersActivationTime, 
+                                       NetDeviceContainer(ueNetDev.Get(0)), tft1Tx);
+        
+        // Destination: Node 49 (ueNum-1) - RECEIVE only
+        SidelinkInfo slInfoRx = slInfo1;
+        Ptr<LteSlTft> tft1Rx = Create<LteSlTft>(LteSlTft::Direction::RECEIVE, 
+                                                 unicastAddress4, port1, slInfoRx);
+        nrSlHelper->ActivateNrSlBearer(finalSlBearersActivationTime, 
+                                       NetDeviceContainer(ueNetDev.Get(ueNum - 1)), tft1Rx);
     }
     if (!enableSingleFlow || enableSingleFlow == 2)
     {
+        // For groupcast/broadcast flows, keep BIDIRECTIONAL on all UEs
         nrSlHelper->ActivateNrSlBearer(finalSlBearersActivationTime, ueNetDev, tft2);
     }
     if (!enableSingleFlow || enableSingleFlow == 3)
     {
+        // For groupcast/broadcast flows, keep BIDIRECTIONAL on all UEs
         nrSlHelper->ActivateNrSlBearer(finalSlBearersActivationTime, ueNetDev, tft3);
     }
 
