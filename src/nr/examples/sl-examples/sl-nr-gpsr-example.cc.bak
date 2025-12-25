@@ -146,7 +146,7 @@ $ ./ns3 run "sl-multi-lc-example --help"
 #include "ns3/gpsr-helper.h"
 #include "ns3/gpsr.h"
 #include "ns3/stats-module.h"
-#include "ns3/traci-module.h"
+#include "ns3/ns2-mobility-helper.h"
 
 #include <iomanip>
 #include <ostream>
@@ -339,13 +339,13 @@ main(int argc, char* argv[])
      */
     Config::SetDefault("ns3::LteRlcUm::MaxTxBufferSize", UintegerValue(999999999));
 
-    // Create UE node pool - pre-allocate nodes for SUMO vehicles
+    // Create UE nodes - use SUMO trace with up to 400 vehicles
     NodeContainer ueNodeContainer;
-    uint16_t ueNum = 200;  // Max concurrent vehicles from SUMO
+    uint16_t ueNum = 197;  // 197 vehicles from new SUMO trace
     ueNodeContainer.Create(ueNum);
 
-    // Setup initial mobility (far away from simulation area)
-    // Nodes will be moved to correct positions by TraCI when vehicles depart
+    // First, assign initial spread-out positions to all nodes (far from simulation area)
+    // This prevents path loss NaN errors for nodes that haven't departed in SUMO yet
     MobilityHelper initialMobility;
     initialMobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
     Ptr<GridPositionAllocator> gridAlloc = CreateObject<GridPositionAllocator>();
@@ -358,19 +358,10 @@ main(int argc, char* argv[])
     initialMobility.SetPositionAllocator(gridAlloc);
     initialMobility.Install(ueNodeContainer);
 
-    // Setup TraCI client - will be configured later after NR stack installation
-    Ptr<TraciClient> sumoClient = CreateObject<TraciClient>();
-    sumoClient->SetAttribute("SumoConfigPath", StringValue("/home/lyh/ns3-nr-v2x/ns-3-dev/src/nr/examples/grid_network_fed/grid.sumocfg"));
-    sumoClient->SetAttribute("SumoBinaryPath", StringValue(""));  // Use system SUMO
-    sumoClient->SetAttribute("SynchInterval", TimeValue(Seconds(0.1)));
-    sumoClient->SetAttribute("StartTime", TimeValue(Seconds(0.0)));
-    sumoClient->SetAttribute("SumoGUI", BooleanValue(false));
-    sumoClient->SetAttribute("SumoPort", UintegerValue(3400));
-    sumoClient->SetAttribute("PenetrationRate", DoubleValue(1.0));
-    sumoClient->SetAttribute("SumoLogFile", BooleanValue(true));
-    sumoClient->SetAttribute("SumoStepLog", BooleanValue(false));
-    sumoClient->SetAttribute("SumoSeed", IntegerValue(10));
-    sumoClient->SetAttribute("SumoWaitForSocket", TimeValue(Seconds(1.0)));
+    // Then use Ns2MobilityHelper - it will override positions for departed vehicles
+    std::string mobilityTracePath = "/home/lyh/ns3-nr-v2x/ns-3-dev/src/nr/examples/grid_network_fed/mobility.tcl";
+    Ns2MobilityHelper ns2Mobility = Ns2MobilityHelper(mobilityTracePath);
+    ns2Mobility.Install();  // Install on nodes defined in trace file
 
     /* Multi-hop topology for GPSR demo:
      *
@@ -965,40 +956,6 @@ main(int argc, char* argv[])
     ueMac0->GetAttribute("NrSlUeMacScheduler", v);
     auto scheduler0 = v.Get<NrSlUeMacScheduler>()->GetObject<NrSlUeMacSchedulerFixedMcs>();
     scheduler0->TraceConnect("GrantCreated", "0", MakeCallback(&TraceGrantCreated));
-
-    // Setup TraCI callbacks for node creation/destruction
-    // Callback receives vehicle ID (e.g., "car10") and returns the corresponding node
-    std::function<Ptr<Node> (const std::string&)> setupNewNode = [&] (const std::string& vehicleId) -> Ptr<Node>
-    {
-        // Parse numeric ID from vehicle ID (e.g., "car10" -> 10)
-        std::string numStr = vehicleId.substr(3);  // Skip "car" prefix
-        uint32_t nodeId = std::stoul(numStr);
-        
-        if (nodeId >= ueNodeContainer.GetN())
-            NS_FATAL_ERROR("Vehicle ID " << vehicleId << " exceeds node pool size " << ueNodeContainer.GetN());
-
-        // Get pre-configured node matching the vehicle ID
-        Ptr<Node> includedNode = ueNodeContainer.Get(nodeId);
-        
-        NS_LOG_INFO("TraCI: Vehicle " << vehicleId << " entered, using node " << nodeId);
-        return includedNode;
-    };
-
-    // Callback for node shutdown (vehicle leaves)
-    std::function<void (Ptr<Node>)> shutdownNode = [] (Ptr<Node> exNode)
-    {
-        // Move node far away from simulation area
-        Ptr<ConstantPositionMobilityModel> mob = exNode->GetObject<ConstantPositionMobilityModel>();
-        if (mob)
-        {
-            mob->SetPosition(Vector(10000.0 + (rand() % 100), 10000.0 + (rand() % 100), 0.0));
-        }
-        NS_LOG_INFO("TraCI: Vehicle left, node moved to parking area");
-    };
-
-    // Start TraCI client and connect to SUMO
-    sumoClient->SumoSetup(setupNewNode, shutdownNode);
-    NS_LOG_INFO("TraCI connected to SUMO, synchronizing vehicle positions");
 
     Simulator::Stop(finalSimTime);
     Simulator::Run();

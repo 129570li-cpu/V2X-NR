@@ -51,7 +51,7 @@ public:
   ~TraciClient(void);
 
   // start up sumo; pass function pointers for including and excluding node functions
-  void SumoSetup(std::function<Ptr<Node>()> includeNode, std::function<void(Ptr<Node>)> excludeNode);
+  void SumoSetup(std::function<Ptr<Node>(const std::string&)> includeNode, std::function<void(Ptr<Node>)> excludeNode);
 
   void SumoStop();
 
@@ -83,7 +83,7 @@ private:
   std::vector<std::string> m_untrackedVehicles;
 
   // function pointers to node include/exclude functions 
-  std::function<Ptr<Node>()> m_includeNode;
+  std::function<Ptr<Node>(const std::string&)> m_includeNode;
   std::function<void(Ptr<Node>)> m_excludeNode;
 
   // port handling functionality for multiple parallel simulations

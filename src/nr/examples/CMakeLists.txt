@@ -54,6 +54,7 @@ foreach(
     SOURCE_FILES sl-examples/${example}.cc
     LIBRARIES_TO_LINK ${libnr}
                       ${libgpsr}
+                      ${libtraci}
   )
 endforeach()
 

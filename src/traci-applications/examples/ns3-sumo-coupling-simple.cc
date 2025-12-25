@@ -110,7 +110,7 @@ main (int argc, char *argv[])
   vehicleSpeedControlHelper.SetAttribute ("Client", (PointerValue) sumoClient); // pass TraciClient object for accessing sumo in application
 
   // callback function for node creation
-  std::function<Ptr<Node> ()> setupNewWifiNode = [&] () -> Ptr<Node>
+  std::function<Ptr<Node> (const std::string&)> setupNewWifiNode = [&] (const std::string& vehicleId) -> Ptr<Node>
     {
       if (nodeCounter >= nodePool.GetN())
         NS_FATAL_ERROR("Node Pool empty!: " << nodeCounter << " nodes created.");
