@@ -341,7 +341,7 @@ main(int argc, char* argv[])
 
     // Create UE nodes - use SUMO trace with up to 400 vehicles
     NodeContainer ueNodeContainer;
-    uint16_t ueNum = 50;  // 50 vehicles from new SUMO trace
+    uint16_t ueNum = 197;  // 197 vehicles from new SUMO trace
     ueNodeContainer.Create(ueNum);
 
     // First, assign initial spread-out positions to all nodes (far from simulation area)
@@ -359,7 +359,7 @@ main(int argc, char* argv[])
     initialMobility.Install(ueNodeContainer);
 
     // Then use Ns2MobilityHelper - it will override positions for departed vehicles
-    std::string mobilityTracePath = "/home/lyh/ns3-nr-v2x/ns-3-dev/src/nr/examples/sumo-small/grid_50veh/mobility.tcl";
+    std::string mobilityTracePath = "/home/lyh/ns3-nr-v2x/ns-3-dev/src/nr/examples/grid_network_fed/mobility.tcl";
     Ns2MobilityHelper ns2Mobility = Ns2MobilityHelper(mobilityTracePath);
     ns2Mobility.Install();  // Install on nodes defined in trace file
 
@@ -381,12 +381,12 @@ main(int argc, char* argv[])
         NS_LOG_INFO("Debug log file opened: " << logDir << "sl-nr-gpsr-debug.log");
     }
     
-    LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_DEBUG);
+    LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_DEBUG);  // Back to DEBUG for visibility
     //LogComponentEnable("EpcTftClassifier", LOG_LEVEL_INFO);
     //LogComponentEnable("LteSlTft", LOG_LEVEL_INFO);
-    LogComponentEnable("NrSlUeMac", LOG_LEVEL_INFO);
+    LogComponentEnable("NrSlUeMac", LOG_LEVEL_WARN);            // Reduced from INFO
     LogComponentEnable("SlNrGpsrExample", LOG_LEVEL_INFO);
-    LogComponentEnable("EpcUeNas", LOG_LEVEL_DEBUG);
+    //LogComponentEnable("EpcUeNas", LOG_LEVEL_INFO);             // Commented out to reduce log
     //LogComponentEnable("NrSpectrumPhy", LOG_LEVEL_INFO);
     LogComponentEnableAll(LOG_PREFIX_TIME);
     LogComponentEnableAll(LOG_PREFIX_NODE);
@@ -590,7 +590,7 @@ main(int argc, char* argv[])
 
     // Target IP
     Ipv4Address groupAddress4("225.0.0.0"); // use multicast address as destination
-    Ipv4Address unicastAddress4("7.0.0.51");  // Node 49's IP (7.0.0.2 + 49 = 7.0.0.51)
+    Ipv4Address unicastAddress4("7.0.0.198");  // Node 196's IP (7.0.0.2 + 196 = 7.0.0.198)
 
     /************************** Traffic flows configuration ********************/
     /*
@@ -604,7 +604,7 @@ main(int argc, char* argv[])
     // Create the traffic profiles
     uint32_t dstL2Broadcast = 255;
     uint32_t dstL2Groupcast = 254;
-    uint32_t dstL2Unicast = 50; // IMSI 50 is assigned to node_49 (last node)
+    uint32_t dstL2Unicast = 197; // IMSI 197 is assigned to node_196 (last node)
                                // Source L2 ID is the lower bits of the IMSI.
 
     SidelinkInfo slInfo1;

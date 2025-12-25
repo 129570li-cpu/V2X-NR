@@ -1,0 +1,72 @@
+下面给你一个“完整可落地”的方案，目标是GPSR 选下一跳 + NR Sidelink 真正单播，避免全网监听和转发风暴。
+
+核心问题回顾（从最新日志看到的现象）
+
+EpcUeNas:Send() 仍用最终目的地址匹配 TFT（日志里一直是 7.0.0.51 (line 8001)），GPSR 选的下一跳没被 L2 用上。
+很多节点都在 DoReceivePsschPhyPdu(): ... dst: 50，说明所有 UE 都在监听 dstL2Id=50（“单播变广播”）。
+Tx Queue size 快速上涨，重复转发+多点接收造成拥塞。
+完整方案
+
+1) GPSR → NAS 传递“下一跳”
+
+目的：让 L2 按 GPSR 选的下一跳发，而不是最终目的 IP。
+做法：新增一个 PacketTag（只用于本节点内GPSR→EpcUeNas 传递，不需要跨节点）。
+实现位置：
+gpsr.cc
+在以下路径设置 tag（下一跳 IP）：
+RoutingProtocol::RouteOutput() 在计算出 nextHop 后设置 tag（本地发包路径）。
+RoutingProtocol::Forwarding() 和 RoutingProtocol::RecoveryMode() 在 ucb(route, p, header) 前设置 tag（转发路径）。
+RoutingProtocol::SendPacketFromQueue() 在 m_downTarget(...) 前设置 tag（排队后发送路径）。
+设计 tag 示例（放在 src/gpsr/model/ 新文件或已有 gpsr tag 文件内）：
+class GpsrNextHopTag : public Tag {
+  // 存 Ipv4Address nextHop
+};
+2) EpcUeNas 用 “下一跳” 匹配 TFT
+
+修改 epc-ue-nas.cc 的 EpcUeNas::Send()：
+取 UDP 端口后，先看 GpsrNextHopTag，有就用 tag 的 IP 作为 TFT 匹配地址；没有才用原始 ipv4Header.GetDestination()。
+只在 UDP + GPSR POS Tag 时启用，避免影响非 GPSR 业务。
+伪代码：
+Ipv4Address tftDst = ipv4Header.GetDestination();
+gpsr::GpsrNextHopTag nh;
+gpsr::GpsrHeaderTag gpsrTag;
+if (protocol == UdpL4Protocol::PROT_NUMBER &&
+    pCopy->PeekPacketTag(gpsrTag) && gpsrTag.GetType() == gpsr::GPSRTYPE_POS &&
+    pCopy->PeekPacketTag(nh)) {
+  tftDst = nh.GetNextHop();
+}
+if ((*it)->Matches(tftDst, remotePort)) { ... }
+3) TFT/承载配置：TX 全局，RX 仅自身
+
+你现在“全量 TFT 映射”是 BIDIRECTIONAL，导致所有 UE 都监听所有 dstL2Id，必须拆开：
+全量映射（IP→L2）改成 TRANSMIT-only，让每个 UE 能向任意下一跳发送，但不监听。
+每个 UE 只监听自己的 L2 ID（RECEIVE-only）。
+修改点：sl-nr-gpsr-example.cc
+“Complete TFT mapping for all nodes” 改为 LteSlTft::Direction::TRANSMIT。
+额外为每个 UE 单独配置一个 RECEIVE bearer（只监听自己的 L2 ID），用单 UE 容器激活。
+示例思路：
+// 1) 全量映射：TRANSMIT-only
+Ptr<LteSlTft> tftNode = Create<LteSlTft>(LteSlTft::Direction::TRANSMIT, nodeIp, 0, slInfoNode);
+nrSlHelper->ActivateNrSlBearer(Seconds(0), ueNetDev, tftNode);
+
+// 2) 自身监听：RECEIVE-only（每个 UE 单独激活）
+SidelinkInfo slInfoSelf = slInfoNode;
+slInfoSelf.m_dstL2Id = selfL2Id;
+Ptr<LteSlTft> tftSelfRx = Create<LteSlTft>(LteSlTft::Direction::RECEIVE, selfIp, 0, slInfoSelf);
+nrSlHelper->ActivateNrSlBearer(Seconds(0), NetDeviceContainer(ueNetDev.Get(i)), tftSelfRx);
+4) 应用流 bearer 只给端点，不要给所有 UE
+
+目前 tft1/2/3 对所有 UE 激活，会导致中间节点也建立应用级 RX/TX，放大风暴。
+建议：
+源节点：只激活 TRANSMIT。
+目的节点：只激活 RECEIVE。
+其它节点不用应用 bearer（只需要 GPSR 转发能力即可）。
+5) 可选：重复抑制（防转发风暴）
+
+在 RoutingProtocol::Forwarding() 增加 (src, seq) cache，重复包直接 drop。
+这会显著降低 Forwarding() 高频重复日志和 Tx Queue 爆涨。
+验证要点（改完后日志应该看到）
+
+EpcUeNas:Send() 用下一跳 IP 匹配 TFT（增加一条 log 验证）。
+NrSlUeMac:DoReceivePsschPhyPdu(): ... dst: 50 只出现在 真正下一跳（单播有效）。
+Tx Queue size 不再指数级上升
