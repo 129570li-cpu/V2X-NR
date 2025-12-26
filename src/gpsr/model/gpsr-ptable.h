@@ -97,6 +97,17 @@ class PositionTable
     Ipv4Address BestNeighbor(Vector dstPosition, Vector nodePos);
 
     /**
+     * \brief Gets best neighbor using two-hop aware scoring
+     * Uses composite score: Progress + LinkQuality + LinkDuration
+     * Falls back to standard greedy if no good candidates
+     * \param dstPosition Position of the destination
+     * \param nodePos Position of the current node
+     * \param nodeVel Velocity of the current node
+     * \return IPv4 address of the best neighbor, GetZero() if none found
+     */
+    Ipv4Address BestNeighborTwoHop(Vector dstPosition, Vector nodePos, Vector nodeVel);
+
+    /**
      * \brief Gets best neighbor for perimeter forwarding (right-hand rule)
      * \param previousHop Position of the previous hop
      * \param nodePos Position of the current node
@@ -168,6 +179,34 @@ class PositionTable
      * \return Vector of NeighborSummary structs sorted by link quality
      */
     std::vector<NeighborSummary> GetTopKNeighborSummaries(uint8_t k, Vector selfPos);
+
+    /**
+     * \brief Calculate Link Duration (RET) based on relative motion
+     * Solves |r + v*t| = R for smallest positive t
+     * \param pos1 Position of node 1
+     * \param vel1 Velocity of node 1
+     * \param pos2 Position of node 2
+     * \param vel2 Velocity of node 2
+     * \param commRange Communication range R
+     * \return Predicted time until link breaks (seconds), or large value if stable
+     */
+    static double CalculateLinkDuration(Vector pos1, Vector vel1, 
+                                        Vector pos2, Vector vel2, 
+                                        double commRange);
+
+    /**
+     * \brief Calculate two-hop aware score for a neighbor
+     * Score = w1*Progress + w2*LinkQuality + w3*LinkDuration
+     * \param neighborId The 1-hop neighbor to score
+     * \param dstPos Destination position
+     * \param selfPos Current node position
+     * \param selfVel Current node velocity
+     * \return Composite score (higher is better), or -1 if invalid
+     */
+    double CalculateTwoHopScore(Ipv4Address neighborId,
+                                Vector dstPos,
+                                Vector selfPos,
+                                Vector selfVel);
 
     /**
      * \brief Neighbor entry structure with position, velocity, SINR, and two-hop data

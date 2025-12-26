@@ -298,6 +298,68 @@ PositionTable::BestNeighbor(Vector dstPosition, Vector nodePos)
     }
 }
 
+Ipv4Address
+PositionTable::BestNeighborTwoHop(Vector dstPosition, Vector nodePos, Vector nodeVel)
+{
+    NS_LOG_FUNCTION(this << dstPosition << nodePos << nodeVel);
+
+    // Single Purge at the beginning
+    Purge();
+
+    double initialDistance = CalculateDistance(nodePos, dstPosition);
+
+    if (m_table.empty())
+    {
+        NS_LOG_DEBUG("BestNeighborTwoHop: table is empty");
+        return Ipv4Address::GetZero();
+    }
+
+    Ipv4Address bestNeighbor = Ipv4Address::GetZero();
+    double bestScore = -1.0;
+    double bestDistance = std::numeric_limits<double>::max();
+
+    // Score all neighbors that make forward progress
+    for (const auto& entry : m_table)
+    {
+        double distance = CalculateDistance(entry.second.position, dstPosition);
+        
+        // Only consider neighbors that make progress toward destination
+        if (distance >= initialDistance)
+        {
+            continue;
+        }
+
+        // Calculate composite score using CalculateTwoHopScore
+        double score = CalculateTwoHopScore(entry.first, dstPosition, nodePos, nodeVel);
+        
+        if (score < 0)
+        {
+            // Invalid score, skip
+            continue;
+        }
+
+        // Select neighbor with highest score
+        // If scores are equal, prefer the one closer to destination
+        if (score > bestScore || (score == bestScore && distance < bestDistance))
+        {
+            bestScore = score;
+            bestNeighbor = entry.first;
+            bestDistance = distance;
+        }
+    }
+
+    if (bestNeighbor != Ipv4Address::GetZero())
+    {
+        NS_LOG_DEBUG("BestNeighborTwoHop: selected " << bestNeighbor 
+                     << " score=" << bestScore << " dist=" << bestDistance);
+        return bestNeighbor;
+    }
+
+    // Fallback: No neighbor passed the scoring, try standard greedy as last resort
+    NS_LOG_DEBUG("BestNeighborTwoHop: no scored neighbor, falling back to greedy");
+    return BestNeighbor(dstPosition, nodePos);
+}
+
 double
 PositionTable::GetAngle(Vector centrePos, Vector refPos, Vector node)
 {
@@ -467,6 +529,120 @@ Callback<void, WifiMacHeader const&>
 PositionTable::GetTxErrorCallback() const
 {
     return m_txErrorCallback;
+}
+
+double
+PositionTable::CalculateLinkDuration(Vector pos1, Vector vel1, 
+                                      Vector pos2, Vector vel2, 
+                                      double commRange)
+{
+    // Relative position and velocity
+    double rx = pos2.x - pos1.x;
+    double ry = pos2.y - pos1.y;
+    double vx = vel2.x - vel1.x;
+    double vy = vel2.y - vel1.y;
+    
+    // Current distance
+    double currentDist = std::sqrt(rx*rx + ry*ry);
+    
+    // If already out of range, return 0
+    if (currentDist >= commRange)
+    {
+        return 0.0;
+    }
+    
+    // Relative speed squared
+    double v2 = vx*vx + vy*vy;
+    
+    // If relative velocity is near zero, link is stable
+    if (v2 < 1e-6)
+    {
+        return 1e6; // Very large value = stable link
+    }
+    
+    // Solve quadratic: |r + v*t|^2 = R^2
+    // (rx + vx*t)^2 + (ry + vy*t)^2 = R^2
+    // v2*t^2 + 2*(rx*vx + ry*vy)*t + (rx^2 + ry^2 - R^2) = 0
+    double a = v2;
+    double b = 2.0 * (rx*vx + ry*vy);
+    double c = rx*rx + ry*ry - commRange*commRange;
+    
+    double discriminant = b*b - 4*a*c;
+    
+    if (discriminant < 0)
+    {
+        // No real solution - link stays within range
+        return 1e6;
+    }
+    
+    double sqrtD = std::sqrt(discriminant);
+    double t1 = (-b + sqrtD) / (2*a);
+    double t2 = (-b - sqrtD) / (2*a);
+    
+    // We want the smallest positive t (when link breaks)
+    double tBreak = 1e6;
+    if (t1 > 0 && t1 < tBreak) tBreak = t1;
+    if (t2 > 0 && t2 < tBreak) tBreak = t2;
+    
+    return tBreak;
+}
+
+double
+PositionTable::CalculateTwoHopScore(Ipv4Address neighborId,
+                                     Vector dstPos,
+                                     Vector selfPos,
+                                     Vector selfVel)
+{
+    NS_LOG_FUNCTION(this << neighborId << dstPos);
+    
+    // Find the neighbor
+    auto it = m_table.find(neighborId);
+    if (it == m_table.end())
+    {
+        return -1.0; // Neighbor not found
+    }
+    
+    const NeighborEntry& neighbor = it->second;
+    
+    // Weight factors (tunable)
+    const double W_PROGRESS = 0.4;
+    const double W_QUALITY = 0.3;
+    const double W_DURATION = 0.3;
+    const double COMM_RANGE = 300.0; // meters (configurable)
+    
+    // 1. Progress: how much closer does this neighbor get us to destination
+    double selfToDst = CalculateDistance(selfPos, dstPos);
+    double neighborToDst = CalculateDistance(neighbor.position, dstPos);
+    double progress = selfToDst - neighborToDst; // Positive = good progress
+    double progressNorm = std::max(0.0, progress / COMM_RANGE); // Normalize to [0,1]
+    
+    // 2. Link Quality: use smoothed SINR if available, else raw SINR
+    double sinr = (neighbor.smoothedSinr > 0) ? neighbor.smoothedSinr : neighbor.sinr;
+    double qualityNorm = 0.0;
+    if (sinr > 0)
+    {
+        // Map SINR to [0,1]: 0dB->0, 30dB->1
+        double sinrDb = 10.0 * std::log10(sinr);
+        qualityNorm = std::max(0.0, std::min(1.0, (sinrDb + 10.0) / 40.0));
+    }
+    
+    // 3. Link Duration: time until link breaks
+    double duration = CalculateLinkDuration(selfPos, selfVel, 
+                                            neighbor.position, neighbor.velocity,
+                                            COMM_RANGE);
+    // Normalize: 0s->0, 10s->1, >10s capped at 1
+    double durationNorm = std::min(1.0, duration / 10.0);
+    
+    // Composite score
+    double score = W_PROGRESS * progressNorm + 
+                   W_QUALITY * qualityNorm + 
+                   W_DURATION * durationNorm;
+    
+    NS_LOG_DEBUG("TwoHopScore for " << neighborId << ": progress=" << progressNorm
+                 << " quality=" << qualityNorm << " duration=" << durationNorm
+                 << " -> score=" << score);
+    
+    return score;
 }
 
 } // namespace gpsr
