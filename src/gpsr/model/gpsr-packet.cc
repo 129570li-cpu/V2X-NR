@@ -129,7 +129,10 @@ NS_OBJECT_ENSURE_REGISTERED(HelloHeader);
 
 HelloHeader::HelloHeader(double originPosx, double originPosy)
     : m_originPosx(originPosx),
-      m_originPosy(originPosy)
+      m_originPosy(originPosy),
+      m_velocityX(0.0),
+      m_velocityY(0.0),
+      m_timestamp(0)
 {
 }
 
@@ -150,22 +153,59 @@ HelloHeader::GetInstanceTypeId() const
 uint32_t
 HelloHeader::GetSerializedSize() const
 {
-    return 16; // 2 * sizeof(double) = 2 * 8 = 16
+    // Position: 2 * 8 = 16 bytes
+    // Velocity: 2 * 8 = 16 bytes  
+    // Timestamp: 4 bytes
+    // Neighbor count: 1 byte
+    // Neighbors: count * 21 bytes
+    return 16 + 16 + 4 + 1 + (m_neighbors.size() * NeighborSummary::GetSerializedSize());
 }
 
 void
 HelloHeader::Serialize(Buffer::Iterator i) const
 {
+    // Position
     i.WriteHtonU64(DoubleToUint64(m_originPosx));
     i.WriteHtonU64(DoubleToUint64(m_originPosy));
+    // Velocity
+    i.WriteHtonU64(DoubleToUint64(m_velocityX));
+    i.WriteHtonU64(DoubleToUint64(m_velocityY));
+    // Timestamp
+    i.WriteHtonU32(m_timestamp);
+    // Neighbor count
+    uint8_t count = static_cast<uint8_t>(std::min(m_neighbors.size(), 
+                                                   static_cast<size_t>(MAX_NEIGHBORS)));
+    i.WriteU8(count);
+    // Neighbors
+    for (uint8_t n = 0; n < count; ++n)
+    {
+        m_neighbors[n].Serialize(i);
+    }
 }
 
 uint32_t
 HelloHeader::Deserialize(Buffer::Iterator start)
 {
     Buffer::Iterator i = start;
+    // Position
     m_originPosx = Uint64ToDouble(i.ReadNtohU64());
     m_originPosy = Uint64ToDouble(i.ReadNtohU64());
+    // Velocity
+    m_velocityX = Uint64ToDouble(i.ReadNtohU64());
+    m_velocityY = Uint64ToDouble(i.ReadNtohU64());
+    // Timestamp
+    m_timestamp = i.ReadNtohU32();
+    // Neighbor count
+    uint8_t count = i.ReadU8();
+    // Neighbors
+    m_neighbors.clear();
+    m_neighbors.reserve(count);
+    for (uint8_t n = 0; n < count; ++n)
+    {
+        NeighborSummary ns;
+        ns.Deserialize(i);
+        m_neighbors.push_back(ns);
+    }
     uint32_t dist = i.GetDistanceFrom(start);
     NS_ASSERT(dist == GetSerializedSize());
     return dist;
@@ -174,13 +214,30 @@ HelloHeader::Deserialize(Buffer::Iterator start)
 void
 HelloHeader::Print(std::ostream& os) const
 {
-    os << "OriginPosition: " << m_originPosx << " " << m_originPosy;
+    os << "Pos:(" << m_originPosx << "," << m_originPosy << ") "
+       << "Vel:(" << m_velocityX << "," << m_velocityY << ") "
+       << "TS:" << m_timestamp << " "
+       << "Neighbors:" << m_neighbors.size();
 }
 
 bool
 HelloHeader::operator==(const HelloHeader& o) const
 {
-    return (m_originPosx == o.m_originPosx && m_originPosy == o.m_originPosy);
+    return (m_originPosx == o.m_originPosx && m_originPosy == o.m_originPosy &&
+            m_velocityX == o.m_velocityX && m_velocityY == o.m_velocityY &&
+            m_timestamp == o.m_timestamp && m_neighbors.size() == o.m_neighbors.size());
+}
+
+void
+HelloHeader::SetNeighbors(const std::vector<NeighborSummary>& neighbors)
+{
+    // Only store up to MAX_NEIGHBORS
+    m_neighbors.clear();
+    size_t count = std::min(neighbors.size(), static_cast<size_t>(MAX_NEIGHBORS));
+    for (size_t i = 0; i < count; ++i)
+    {
+        m_neighbors.push_back(neighbors[i]);
+    }
 }
 
 std::ostream&

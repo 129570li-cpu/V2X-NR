@@ -268,6 +268,7 @@ RoutingProtocol::SendHello()
     }
 
     Vector pos = mm->GetPosition();
+    Vector vel = mm->GetVelocity();
 
     for (auto& s : m_socketAddresses)
     {
@@ -275,6 +276,18 @@ RoutingProtocol::SendHello()
         Ipv4InterfaceAddress iface = s.second;
 
         HelloHeader helloHeader(pos.x, pos.y);
+        
+        // Set velocity
+        helloHeader.SetVelocity(vel.x, vel.y);
+        
+        // Set timestamp (milliseconds since simulation start)
+        helloHeader.SetTimestamp(static_cast<uint32_t>(Simulator::Now().GetMilliSeconds()));
+        
+        // Set Top-K neighbor summaries for two-hop routing
+        std::vector<NeighborSummary> neighborList = m_neighbors.GetTopKNeighborSummaries(
+            HelloHeader::MAX_NEIGHBORS,
+            pos);  // Current node position for distance sorting
+        helloHeader.SetNeighbors(neighborList);
 
         Ptr<Packet> packet = Create<Packet>();
         packet->AddHeader(helloHeader);
@@ -296,7 +309,8 @@ RoutingProtocol::SendHello()
         }
 
         socket->SendTo(packet, 0, InetSocketAddress(destination, GPSR_PORT));
-        NS_LOG_DEBUG("Sent HELLO from " << iface.GetLocal() << " to " << destination);
+        NS_LOG_DEBUG("Sent HELLO from " << iface.GetLocal() << " to " << destination
+                     << " with " << neighborList.size() << " neighbors");
     }
 }
 
@@ -327,10 +341,10 @@ RoutingProtocol::RecvGpsr(Ptr<Socket> socket)
 
     if (tHeader.Get() == GPSRTYPE_HELLO)
     {
-        // Check if remaining packet is large enough for HelloHeader (16 bytes)
-        if (packet->GetSize() < 16)
+        // Extended HelloHeader: min 37 bytes (16+16+4+1 = position+velocity+timestamp+count)
+        if (packet->GetSize() < 37)
         {
-            NS_LOG_DEBUG("Packet too small for HelloHeader, size: " << packet->GetSize());
+            NS_LOG_DEBUG("Packet too small for extended HelloHeader, size: " << packet->GetSize());
             return;
         }
 
@@ -340,13 +354,34 @@ RoutingProtocol::RecvGpsr(Ptr<Socket> socket)
         Vector pos;
         pos.x = hdr.GetOriginPosx();
         pos.y = hdr.GetOriginPosy();
+        
+        Vector vel;
+        vel.x = hdr.GetVelocityX();
+        vel.y = hdr.GetVelocityY();
+        
+        uint32_t timestamp = hdr.GetTimestamp();
+        const auto& twoHopNeighbors = hdr.GetNeighbors();
 
         InetSocketAddress inetSourceAddr = InetSocketAddress::ConvertFrom(sourceAddress);
         Ipv4Address sender = inetSourceAddr.GetIpv4();
         Ipv4Address receiver = m_socketAddresses[socket].GetLocal();
 
-        NS_LOG_DEBUG("HELLO from " << sender << " position (" << pos.x << ", " << pos.y << ")");
-        UpdateRouteToNeighbor(sender, receiver, pos);
+        NS_LOG_DEBUG("HELLO from " << sender << " pos(" << pos.x << "," << pos.y << ") "
+                     << "vel(" << vel.x << "," << vel.y << ") "
+                     << "ts:" << timestamp << " 2hop:" << twoHopNeighbors.size());
+        
+        // Update 1-hop neighbor with extended info (velocity, two-hop neighbors)
+        m_neighbors.AddEntryExtended(sender, pos, vel, twoHopNeighbors);
+        
+        // Log the full current neighbor list
+        NS_LOG_DEBUG("NEIGHBOR LIST: Node " << receiver << " neighbors: " << m_neighbors.GetNeighborList());
+        
+        // Debug: Log two-hop neighbors
+        for (const auto& twoHop : twoHopNeighbors)
+        {
+            NS_LOG_DEBUG("  2-hop via " << sender << ": " << twoHop.ip 
+                         << " pos(" << twoHop.x << "," << twoHop.y << ") lq:" << (int)twoHop.linkQuality);
+        }
     }
 }
 
@@ -354,7 +389,15 @@ void
 RoutingProtocol::UpdateRouteToNeighbor(Ipv4Address sender, Ipv4Address receiver, Vector pos)
 {
     NS_LOG_FUNCTION(this << sender << receiver << pos);
+    
+    // Log neighbor update with detailed information
+    NS_LOG_INFO("NEIGHBOR UPDATE: Node " << receiver << " discovered neighbor " 
+                << sender << " at position (" << pos.x << ", " << pos.y << ")");
+    
     m_neighbors.AddEntry(sender, pos);
+    
+    // Log the full current neighbor list
+    NS_LOG_INFO("NEIGHBOR LIST: Node " << receiver << " neighbors: " << m_neighbors.GetNeighborList());
 }
 
 void

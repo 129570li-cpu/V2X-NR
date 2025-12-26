@@ -74,6 +74,42 @@ PositionTable::AddEntry(Ipv4Address id, Vector position)
 }
 
 void
+PositionTable::AddEntryExtended(Ipv4Address id, 
+                                 Vector position, 
+                                 Vector velocity,
+                                 const std::vector<NeighborSummary>& twoHopNeighbors)
+{
+    NS_LOG_FUNCTION(this << id << position << velocity);
+
+    auto i = m_table.find(id);
+    if (i != m_table.end())
+    {
+        // Preserve existing SINR data, update position, velocity, and two-hop
+        i->second.position = position;
+        i->second.velocity = velocity;
+        i->second.lastUpdate = Simulator::Now();
+        i->second.twoHopNeighbors = twoHopNeighbors;
+        NS_LOG_DEBUG("Updated neighbor " << id << " vel(" << velocity.x << "," << velocity.y 
+                     << ") 2hop:" << twoHopNeighbors.size() << " preserving SINR=" << i->second.sinr);
+    }
+    else
+    {
+        // New neighbor with full info
+        NeighborEntry entry;
+        entry.position = position;
+        entry.velocity = velocity;
+        entry.lastUpdate = Simulator::Now();
+        entry.sinr = -1.0;
+        entry.smoothedSinr = -1.0;
+        entry.lastSinrUpdate = Seconds(0);
+        entry.twoHopNeighbors = twoHopNeighbors;
+        m_table.insert(std::make_pair(id, entry));
+        NS_LOG_DEBUG("Added new neighbor " << id << " vel(" << velocity.x << "," << velocity.y 
+                     << ") 2hop:" << twoHopNeighbors.size());
+    }
+}
+
+void
 PositionTable::DeleteEntry(Ipv4Address id)
 {
     NS_LOG_FUNCTION(this << id);
@@ -375,6 +411,56 @@ PositionTable::GetNeighborList()
     oss << "]";
     
     return oss.str();
+}
+
+std::vector<NeighborSummary>
+PositionTable::GetTopKNeighborSummaries(uint8_t k, Vector selfPos)
+{
+    NS_LOG_FUNCTION(this << k);
+    
+    // First purge stale entries
+    Purge();
+    
+    // Collect all valid neighbors with their scores
+    std::vector<std::pair<double, NeighborSummary>> scoredNeighbors;
+    
+    for (const auto& entry : m_table)
+    {
+        NeighborSummary ns;
+        ns.ip = entry.first;
+        ns.x = static_cast<float>(entry.second.position.x);
+        ns.y = static_cast<float>(entry.second.position.y);
+        
+        // TODO: Add velocity when NeighborEntry is extended in Phase B
+        ns.vx = 0.0f;
+        ns.vy = 0.0f;
+        
+        // Map SINR to link quality (0-255)
+        // Use log scale: SINR 0dB -> 0, SINR 30dB -> 255
+        double sinrDb = (entry.second.sinr > 0) ? 10.0 * std::log10(entry.second.sinr) : -10.0;
+        sinrDb = std::max(-10.0, std::min(30.0, sinrDb)); // Clamp to [-10, 30] dB
+        ns.linkQuality = static_cast<uint8_t>((sinrDb + 10.0) / 40.0 * 255.0);
+        
+        // Score: prioritize by link quality (higher is better)
+        double score = ns.linkQuality;
+        
+        scoredNeighbors.push_back({score, ns});
+    }
+    
+    // Sort by score (descending)
+    std::sort(scoredNeighbors.begin(), scoredNeighbors.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+    
+    // Return top K
+    std::vector<NeighborSummary> result;
+    result.reserve(std::min(static_cast<size_t>(k), scoredNeighbors.size()));
+    for (size_t i = 0; i < std::min(static_cast<size_t>(k), scoredNeighbors.size()); ++i)
+    {
+        result.push_back(scoredNeighbors[i].second);
+    }
+    
+    NS_LOG_DEBUG("GetTopKNeighborSummaries: returning " << result.size() << " of " << m_table.size() << " neighbors");
+    return result;
 }
 
 Callback<void, WifiMacHeader const&>

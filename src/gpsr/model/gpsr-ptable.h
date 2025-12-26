@@ -6,6 +6,8 @@
 #ifndef GPSR_PTABLE_H
 #define GPSR_PTABLE_H
 
+#include "gpsr-packet.h"
+
 #include "ns3/callback.h"
 #include "ns3/ipv4-address.h"
 #include "ns3/nstime.h"
@@ -14,6 +16,7 @@
 #include "ns3/wifi-mac-header.h"
 
 #include <map>
+#include <vector>
 
 namespace ns3
 {
@@ -42,6 +45,18 @@ class PositionTable
      * \param position Position of the neighbor
      */
     void AddEntry(Ipv4Address id, Vector position);
+
+    /**
+     * \brief Adds/updates entry with extended info (velocity, two-hop neighbors)
+     * \param id IPv4 address of the neighbor
+     * \param position Position of the neighbor
+     * \param velocity Velocity vector of the neighbor
+     * \param twoHopNeighbors List of two-hop neighbors from this neighbor
+     */
+    void AddEntryExtended(Ipv4Address id, 
+                          Vector position, 
+                          Vector velocity,
+                          const std::vector<NeighborSummary>& twoHopNeighbors);
 
     /**
      * \brief Deletes entry in position table
@@ -147,14 +162,25 @@ class PositionTable
     void UpdateSinr(Ipv4Address id, double sinr);
 
     /**
-     * \brief Neighbor entry structure with position and SINR data
+     * \brief Get Top-K neighbor summaries for Hello piggybacking
+     * \param k Maximum number of neighbors to return
+     * \param selfPos Current node position (for distance-based selection)
+     * \return Vector of NeighborSummary structs sorted by link quality
+     */
+    std::vector<NeighborSummary> GetTopKNeighborSummaries(uint8_t k, Vector selfPos);
+
+    /**
+     * \brief Neighbor entry structure with position, velocity, SINR, and two-hop data
      */
     struct NeighborEntry
     {
-        Vector position;
-        Time lastUpdate;                  // Position update time from HELLO
-        double sinr = -1.0;               // Linear SINR. -1.0 = unknown/invalid
-        Time lastSinrUpdate = Seconds(0); // Time of last valid SINR update
+        Vector position;                   // 1-hop neighbor position
+        Vector velocity;                   // 1-hop neighbor velocity vector
+        Time lastUpdate;                   // Position update time from HELLO
+        double sinr = -1.0;                // Linear SINR. -1.0 = unknown/invalid
+        double smoothedSinr = -1.0;        // EWMA-filtered SINR for stability
+        Time lastSinrUpdate = Seconds(0);  // Time of last valid SINR update
+        std::vector<NeighborSummary> twoHopNeighbors; // 2-hop neighbors via this 1-hop
     };
 
   private:
