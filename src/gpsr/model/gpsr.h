@@ -127,6 +127,12 @@ class RoutingProtocol : public Ipv4RoutingProtocol
                     uint8_t protocol,
                     Ptr<Ipv4Route> route);
 
+    /**
+     * \brief Get pointer to the position table for external SINR updates
+     * \return Pointer to the internal PositionTable
+     */
+    PositionTable* GetPositionTable() { return &m_neighbors; }
+
   private:
     /// Start protocol operation
     void Start();

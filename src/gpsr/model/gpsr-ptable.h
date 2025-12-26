@@ -128,13 +128,38 @@ class PositionTable
     bool HasPosition(Ipv4Address id);
 
     /**
+     * \brief Get formatted string of all neighbors for logging
+     * \return String with all neighbor IPs and positions
+     */
+    std::string GetNeighborList();
+
+    /**
      * \brief Get TX error callback
      */
     Callback<void, WifiMacHeader const&> GetTxErrorCallback() const;
 
+    /**
+     * \brief Update SINR for an EXISTING neighbor only.
+     *        If neighbor does not exist, this update is ignored.
+     * \param id IPv4 address of the neighbor
+     * \param sinr The measured linear SINR value
+     */
+    void UpdateSinr(Ipv4Address id, double sinr);
+
+    /**
+     * \brief Neighbor entry structure with position and SINR data
+     */
+    struct NeighborEntry
+    {
+        Vector position;
+        Time lastUpdate;                  // Position update time from HELLO
+        double sinr = -1.0;               // Linear SINR. -1.0 = unknown/invalid
+        Time lastSinrUpdate = Seconds(0); // Time of last valid SINR update
+    };
+
   private:
     Time m_entryLifeTime;
-    std::map<Ipv4Address, std::pair<Vector, Time>> m_table;
+    std::map<Ipv4Address, NeighborEntry> m_table;
 
     // TX error callback
     Callback<void, WifiMacHeader const&> m_txErrorCallback;

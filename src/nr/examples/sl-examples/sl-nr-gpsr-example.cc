@@ -145,11 +145,16 @@ $ ./ns3 run "sl-multi-lc-example --help"
 #include "ns3/point-to-point-module.h"
 #include "ns3/gpsr-helper.h"
 #include "ns3/gpsr.h"
+#include "ns3/gpsr-ptable.h"
 #include "ns3/stats-module.h"
 #include "ns3/traci-module.h"
+#include "ns3/ipv4-list-routing.h"
+#include "ns3/nr-spectrum-phy.h"
+#include "ns3/nr-sl-phy-mac-common.h"
 
 #include <iomanip>
 #include <ostream>
+#include <sstream>
 
 using namespace ns3;
 
@@ -161,6 +166,11 @@ std::list<double> g_delays;             //!< Global list to store packet delays 
 std::ofstream g_fileGrantCreated;       //!< File stream for saving scheduling output
 std::ostringstream g_firstGrantCreated; //!< String stream for saving first scheduling output
 bool g_firstGrant = true; //!< Flag to control writing first grant to g_firstGrantCreated
+
+// ========== Distance-based traffic generation ==========
+std::vector<uint32_t> g_activeNodeIds;  //!< Track active node IDs from TraCI
+NodeContainer* g_ueNodeContainerPtr = nullptr;  //!< Pointer to UE node container for traffic gen
+double g_minDistanceForTraffic = 250.0;  //!< Minimum distance (m) for multi-hop traffic
 
 /*
  * Structure to keep track of the transmission time of the packets at the
@@ -256,12 +266,125 @@ void WriteGrantCreated(std::ostream& grantStream,
 
 uint32_t GetPacketSize(double dataRateKbps, Time rri);
 
+/**
+ * \brief Generate traffic between the most distant active node pair
+ * 
+ * This function finds the pair of active nodes with maximum geographic distance
+ * and initiates a data flow between them to test GPSR multi-hop routing.
+ */
+void GenerateDistantTraffic()
+{
+    if (g_activeNodeIds.size() < 2 || g_ueNodeContainerPtr == nullptr)
+    {
+        // Not enough active nodes, try again later
+        Simulator::Schedule(Seconds(2.0), &GenerateDistantTraffic);
+        return;
+    }
+
+    // Collect all pairs with distance > threshold
+    std::vector<std::tuple<uint32_t, uint32_t, double>> validPairs;
+    
+    for (size_t i = 0; i < g_activeNodeIds.size(); ++i)
+    {
+        for (size_t j = i + 1; j < g_activeNodeIds.size(); ++j)
+        {
+            Ptr<Node> n1 = g_ueNodeContainerPtr->Get(g_activeNodeIds[i]);
+            Ptr<Node> n2 = g_ueNodeContainerPtr->Get(g_activeNodeIds[j]);
+            if (!n1 || !n2) continue;
+            
+            Ptr<MobilityModel> mob1 = n1->GetObject<MobilityModel>();
+            Ptr<MobilityModel> mob2 = n2->GetObject<MobilityModel>();
+            if (!mob1 || !mob2) continue;
+            
+            Vector p1 = mob1->GetPosition();
+            Vector p2 = mob2->GetPosition();
+            double dist = CalculateDistance(p1, p2);
+            
+            // Collect pairs with distance > threshold
+            if (dist >= g_minDistanceForTraffic)
+            {
+                validPairs.push_back(std::make_tuple(g_activeNodeIds[i], g_activeNodeIds[j], dist));
+            }
+        }
+    }
+
+    if (!validPairs.empty())
+    {
+        // Randomly select one pair from valid pairs
+        size_t randomIdx = rand() % validPairs.size();
+        uint32_t srcNodeId = std::get<0>(validPairs[randomIdx]);
+        uint32_t dstNodeId = std::get<1>(validPairs[randomIdx]);
+        double selectedDist = std::get<2>(validPairs[randomIdx]);
+        
+        // Calculate destination IP: 7.0.0.(nodeId + 2)
+        uint32_t ipOffset = dstNodeId + 2;
+        std::ostringstream ipStream;
+        ipStream << "7.0." << ((ipOffset >> 8) & 0xFF) << "." << (ipOffset & 0xFF);
+        Ipv4Address dstIp(ipStream.str().c_str());
+        
+        // Create and install OnOffApplication
+        uint16_t port = 9001;  // Must match global PacketSink port
+        OnOffHelper onoff("ns3::UdpSocketFactory", 
+                          InetSocketAddress(dstIp, port));
+        onoff.SetAttribute("EnableSeqTsSizeHeader", BooleanValue(true));
+        onoff.SetConstantRate(DataRate("200kb/s"), 512);
+        
+        ApplicationContainer app = onoff.Install(g_ueNodeContainerPtr->Get(srcNodeId));
+        app.Start(Seconds(0.0));
+        app.Stop(Seconds(1.5));  // Short burst
+        
+        // Connect TX trace for delay calculation
+        app.Get(0)->TraceConnectWithoutContext("TxWithSeqTsSize",
+                                               MakeCallback(&TxPacketTraceForDelay));
+        
+        NS_LOG_INFO("Multi-hop Traffic: Node " << srcNodeId << " -> Node " << dstNodeId 
+                    << " (IP:" << dstIp << ", dist=" << selectedDist << "m, " 
+                    << validPairs.size() << " valid pairs)");
+    }
+    else
+    {
+        NS_LOG_DEBUG("No distant pair found (threshold=" << g_minDistanceForTraffic << "m)");
+    }
+
+    // Schedule next traffic generation
+    Simulator::Schedule(Seconds(2.0), &GenerateDistantTraffic);
+}
+
+/**
+ * \brief Trace callback for PSSCH reception - updates GPSR neighbor SINR
+ * 
+ * This function is called when a node receives a PSSCH packet via SL.
+ * It extracts the sender L2 ID and SINR, then updates the GPSR position table.
+ * 
+ * \param gpsr Pointer to the GPSR routing protocol instance
+ * \param params The trace parameters containing SINR and sender info
+ */
+void
+NotifySlPsschRx(Ptr<ns3::gpsr::RoutingProtocol> gpsr, SlRxDataPacketTraceParams params)
+{
+    // Filter out corrupted packets - unreliable SINR data
+    if (params.m_corrupt || params.m_sci2Corrupted)
+    {
+        return;
+    }
+    
+    // Map L2 ID to IP address: IP = 7.0.X.Y where (X*256 + Y) = L2 ID + 1
+    // L2 ID is IMSI which is node_index + 1, so IP offset = L2 ID + 1 = node_index + 2
+    uint32_t ipOffset = params.m_srcL2Id + 1;  // L2 ID starts at 1, IP offset starts at 2
+    std::ostringstream ipStream;
+    ipStream << "7.0." << ((ipOffset >> 8) & 0xFF) << "." << (ipOffset & 0xFF);
+    Ipv4Address neighborIp(ipStream.str().c_str());
+    
+    // Update SINR in GPSR position table (only if neighbor exists)
+    gpsr->GetPositionTable()->UpdateSinr(neighborIp, params.m_sinr);
+}
+
 int
 main(int argc, char* argv[])
 {
     // Scenario parameters
     uint16_t interUeDistance = 150; // 150m to force multi-hop (UE0-UE2 = 300m)
-    uint16_t enableSingleFlow = 1; // 1 = only unicast flow (flow 1)
+    uint16_t enableSingleFlow = 0; // 0 = disable all fixed flows, use only distance-based random traffic
 
     // Traffic parameters
     uint32_t udpPacketSize = 200;
@@ -341,7 +464,7 @@ main(int argc, char* argv[])
 
     // Create UE node pool - pre-allocate nodes for SUMO vehicles
     NodeContainer ueNodeContainer;
-    uint16_t ueNum = 200;  // Max concurrent vehicles from SUMO
+    uint16_t ueNum = 50;  // Max concurrent vehicles from SUMO
     ueNodeContainer.Create(ueNum);
 
     // Setup initial mobility (far away from simulation area)
@@ -360,7 +483,7 @@ main(int argc, char* argv[])
 
     // Setup TraCI client - will be configured later after NR stack installation
     Ptr<TraciClient> sumoClient = CreateObject<TraciClient>();
-    sumoClient->SetAttribute("SumoConfigPath", StringValue("/home/lyh/ns3-nr-v2x/ns-3-dev/src/nr/examples/grid_network_fed/grid.sumocfg"));
+    sumoClient->SetAttribute("SumoConfigPath", StringValue("/home/lyh/ns3-nr-v2x/ns-3-dev/src/nr/examples/sumo-small/grid_50veh/grid.sumocfg"));
     sumoClient->SetAttribute("SumoBinaryPath", StringValue(""));  // Use system SUMO
     sumoClient->SetAttribute("SynchInterval", TimeValue(Seconds(0.1)));
     sumoClient->SetAttribute("StartTime", TimeValue(Seconds(0.0)));
@@ -427,8 +550,7 @@ main(int argc, char* argv[])
                                                      BandwidthPartInfo::V2V_Highway);
     OperationBandInfo bandSl = ccBwpCreator.CreateOperationBandContiguousCc(bandConfSl);
 
-    // Limit interference calculation distance to speed up simulation (default is 1e9 dB = all nodes)
-    Config::SetDefault("ns3::SpectrumChannel::MaxLossDb", DoubleValue(97.0));
+    Config::SetDefault("ns3::SpectrumChannel::MaxLossDb", DoubleValue(100.0));
     Config::SetDefault("ns3::ThreeGppChannelModel::UpdatePeriod", TimeValue(MilliSeconds(100)));
     nrHelper->SetChannelConditionModelAttribute("UpdatePeriod", TimeValue(MilliSeconds(0)));
     nrHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(false));
@@ -444,7 +566,7 @@ main(int argc, char* argv[])
 
     // NR Sidelink attribute of UE MAC, which are common for all the UEs
     nrHelper->SetUeMacTypeId(NrSlUeMac::GetTypeId());
-    nrHelper->SetUeMacAttribute("EnableSensing", BooleanValue(false));
+    nrHelper->SetUeMacAttribute("EnableSensing", BooleanValue(true));
     nrHelper->SetUeMacAttribute("T1", UintegerValue(2));
     nrHelper->SetUeMacAttribute("T2", UintegerValue(33));
     nrHelper->SetUeMacAttribute("ActivePoolId", UintegerValue(0));
@@ -596,6 +718,87 @@ main(int argc, char* argv[])
     // This must be called AFTER InternetStackHelper.Install()
     gpsr.Install(ueNodeContainer);
     NS_LOG_INFO("GPSR routing protocol installed on all UEs");
+
+    // ========== Connect RxPsschTraceUe to GPSR SINR updates ==========
+    // For each node, get its GPSR instance and connect the PHY trace to update SINR
+    NS_LOG_INFO("Connecting SINR traces for GPSR neighbor quality tracking...");
+    for (uint32_t i = 0; i < ueNodeContainer.GetN(); ++i)
+    {
+        Ptr<Node> node = ueNodeContainer.Get(i);
+        Ptr<Ipv4> ipv4 = node->GetObject<Ipv4>();
+        if (!ipv4)
+        {
+            NS_LOG_WARN("Node " << i << " has no Ipv4, skipping SINR trace binding");
+            continue;
+        }
+        
+        // Find GPSR routing protocol (may be inside ListRouting)
+        Ptr<Ipv4RoutingProtocol> rp = ipv4->GetRoutingProtocol();
+        Ptr<ns3::gpsr::RoutingProtocol> gpsrProto;
+        
+        Ptr<Ipv4ListRouting> listRouting = DynamicCast<Ipv4ListRouting>(rp);
+        if (listRouting)
+        {
+            for (uint32_t j = 0; j < listRouting->GetNRoutingProtocols(); ++j)
+            {
+                int16_t priority;
+                Ptr<Ipv4RoutingProtocol> proto = listRouting->GetRoutingProtocol(j, priority);
+                gpsrProto = DynamicCast<ns3::gpsr::RoutingProtocol>(proto);
+                if (gpsrProto)
+                {
+                    break;
+                }
+            }
+        }
+        else
+        {
+            gpsrProto = DynamicCast<ns3::gpsr::RoutingProtocol>(rp);
+        }
+        
+        if (!gpsrProto)
+        {
+            NS_LOG_WARN("Node " << i << " has no GPSR routing protocol");
+            continue;
+        }
+        
+        // Get NrSpectrumPhy for the Sidelink BWP
+        Ptr<NrUeNetDevice> ueDevice = DynamicCast<NrUeNetDevice>(ueNetDev.Get(i));
+        if (!ueDevice)
+        {
+            NS_LOG_WARN("Node " << i << " has no NrUeNetDevice");
+            continue;
+        }
+        
+        // Get PHY for the SL BWP (bwpIdForGbrMcptt is the SL BWP ID)
+        Ptr<NrUePhy> uePhy = ueDevice->GetPhy(bwpIdForGbrMcptt);
+        if (!uePhy)
+        {
+            NS_LOG_WARN("Node " << i << " has no PHY for BWP " << bwpIdForGbrMcptt);
+            continue;
+        }
+        
+        Ptr<NrSpectrumPhy> spectrumPhy = uePhy->GetSpectrumPhy();
+        if (!spectrumPhy)
+        {
+            NS_LOG_WARN("Node " << i << " SpectrumPhy not found");
+            continue;
+        }
+        
+        // Connect trace source to callback
+        bool connected = spectrumPhy->TraceConnectWithoutContext(
+            "RxPsschTraceUe", 
+            MakeBoundCallback(&NotifySlPsschRx, gpsrProto));
+        
+        if (connected)
+        {
+            NS_LOG_DEBUG("Node " << i << " SINR trace connected successfully");
+        }
+        else
+        {
+            NS_LOG_WARN("Node " << i << " failed to connect SINR trace");
+        }
+    }
+    NS_LOG_INFO("SINR trace binding complete for GPSR enhancement");
 
     // Target IP
     Ipv4Address groupAddress4("225.0.0.0"); // use multicast address as destination
@@ -881,7 +1084,7 @@ main(int argc, char* argv[])
     ApplicationContainer allClientApps;
     ApplicationContainer allServerApps;
 
-    if (!enableSingleFlow || enableSingleFlow == 1)
+    if (false) // Disable legacy flows - only use random distance-based traffic
     {
         // Install client applications on the first UE (Tx)
         ApplicationContainer clientApps1 = sidelinkClient1.Install(ueNodeContainer.Get(0));
@@ -890,7 +1093,7 @@ main(int argc, char* argv[])
         allClientApps.Add(clientApps1);
     }
 
-    if (!enableSingleFlow || enableSingleFlow == 2)
+    if (false) // Disable legacy flows - only use random distance-based traffic
     {
         ApplicationContainer clientApps2 = sidelinkClient2.Install(ueNodeContainer.Get(0));
         clientApps2.Start(finalSlBearersActivationTime);
@@ -898,13 +1101,30 @@ main(int argc, char* argv[])
         allClientApps.Add(clientApps2);
     }
 
-    if (!enableSingleFlow || enableSingleFlow == 3)
+    if (false) // Disable legacy flows - only use random distance-based traffic
     {
         ApplicationContainer clientApps3 = sidelinkClient3.Install(ueNodeContainer.Get(0));
         clientApps3.Start(finalSlBearersActivationTime);
         clientApps3.Stop(finalSimTime);
         allClientApps.Add(clientApps3);
     }
+
+    // ========== Global PacketSink for distance-based traffic ==========
+    // Install PacketSink on ALL nodes to receive traffic from random distant sources
+    ApplicationContainer globalServerApps;
+    uint16_t globalPort = 9001;  // Port for distance-based traffic (avoid conflict with 8001)
+    PacketSinkHelper globalSink("ns3::UdpSocketFactory", 
+                                InetSocketAddress(Ipv4Address::GetAny(), globalPort));
+    globalSink.SetAttribute("EnableSeqTsSizeHeader", BooleanValue(true));
+    
+    for (uint32_t i = 0; i < ueNum; ++i)
+    {
+        ApplicationContainer nodeServerApp = globalSink.Install(ueNodeContainer.Get(i));
+        nodeServerApp.Start(Seconds(1.0));
+        globalServerApps.Add(nodeServerApp);
+    }
+    NS_LOG_INFO("Installed PacketSink on " << ueNum << " nodes (port " << globalPort << ")");
+    // ========== End global PacketSink ==========
 
     if (!enableSingleFlow || enableSingleFlow == 1)
     {
@@ -956,6 +1176,12 @@ main(int argc, char* argv[])
         allServerApps.Get(ac)->TraceConnectWithoutContext("RxWithSeqTsSize",
                                                           MakeCallback(&RxPacketTraceForDelay));
     }
+    // Connect RX trace to global PacketSinks for distance-based traffic
+    for (uint32_t ac = 0; ac < globalServerApps.GetN(); ac++)
+    {
+        globalServerApps.Get(ac)->TraceConnectWithoutContext("RxWithSeqTsSize",
+                                                             MakeCallback(&RxPacketTraceForDelay));
+    }
     /******************** END Application packet  tracing **********************/
 
     g_fileGrantCreated.open("sl-multi-lc-scheduling.dat", std::ofstream::out);
@@ -980,25 +1206,45 @@ main(int argc, char* argv[])
         // Get pre-configured node matching the vehicle ID
         Ptr<Node> includedNode = ueNodeContainer.Get(nodeId);
         
-        NS_LOG_INFO("TraCI: Vehicle " << vehicleId << " entered, using node " << nodeId);
+        // Track active node for distance-based traffic generation
+        g_activeNodeIds.push_back(nodeId);
+        
+        NS_LOG_INFO("TraCI: Vehicle " << vehicleId << " entered, using node " << nodeId 
+                    << " (active nodes: " << g_activeNodeIds.size() << ")");
         return includedNode;
     };
 
     // Callback for node shutdown (vehicle leaves)
     std::function<void (Ptr<Node>)> shutdownNode = [] (Ptr<Node> exNode)
     {
+        // Remove node from active tracking
+        uint32_t nodeId = exNode->GetId();
+        auto it = std::find(g_activeNodeIds.begin(), g_activeNodeIds.end(), nodeId);
+        if (it != g_activeNodeIds.end())
+        {
+            g_activeNodeIds.erase(it);
+        }
+        
         // Move node far away from simulation area
         Ptr<ConstantPositionMobilityModel> mob = exNode->GetObject<ConstantPositionMobilityModel>();
         if (mob)
         {
             mob->SetPosition(Vector(10000.0 + (rand() % 100), 10000.0 + (rand() % 100), 0.0));
         }
-        NS_LOG_INFO("TraCI: Vehicle left, node moved to parking area");
+        NS_LOG_INFO("TraCI: Vehicle left, node " << nodeId << " moved to parking (active: " 
+                    << g_activeNodeIds.size() << ")");
     };
 
+    // Set global pointer for traffic generation
+    g_ueNodeContainerPtr = &ueNodeContainer;
+    
     // Start TraCI client and connect to SUMO
     sumoClient->SumoSetup(setupNewNode, shutdownNode);
     NS_LOG_INFO("TraCI connected to SUMO, synchronizing vehicle positions");
+
+    // Schedule distance-based traffic generation (start after vehicles enter)
+    Simulator::Schedule(Seconds(5.0), &GenerateDistantTraffic);
+    NS_LOG_INFO("Scheduled distance-based traffic generation (minDist=" << g_minDistanceForTraffic << "m)");
 
     Simulator::Stop(finalSimTime);
     Simulator::Run();

@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <limits>
+#include <sstream>
 
 namespace ns3
 {
@@ -40,7 +42,7 @@ PositionTable::GetEntryUpdateTime(Ipv4Address id)
     auto i = m_table.find(id);
     if (i != m_table.end())
     {
-        return i->second.second;
+        return i->second.lastUpdate;
     }
     return Time(Seconds(0));
 }
@@ -53,9 +55,22 @@ PositionTable::AddEntry(Ipv4Address id, Vector position)
     auto i = m_table.find(id);
     if (i != m_table.end())
     {
-        m_table.erase(id);
+        // Preserve existing SINR data, only update position and time
+        i->second.position = position;
+        i->second.lastUpdate = Simulator::Now();
+        NS_LOG_DEBUG("Updated neighbor " << id << " preserving SINR=" << i->second.sinr);
     }
-    m_table.insert(std::make_pair(id, std::make_pair(position, Simulator::Now())));
+    else
+    {
+        // New neighbor, initialize with invalid SINR
+        NeighborEntry entry;
+        entry.position = position;
+        entry.lastUpdate = Simulator::Now();
+        entry.sinr = -1.0;
+        entry.lastSinrUpdate = Seconds(0);
+        m_table.insert(std::make_pair(id, entry));
+        NS_LOG_DEBUG("Added new neighbor " << id << " with SINR=-1.0");
+    }
 }
 
 void
@@ -63,6 +78,30 @@ PositionTable::DeleteEntry(Ipv4Address id)
 {
     NS_LOG_FUNCTION(this << id);
     m_table.erase(id);
+}
+
+void
+PositionTable::UpdateSinr(Ipv4Address id, double sinr)
+{
+    NS_LOG_FUNCTION(this << id << sinr);
+    auto i = m_table.find(id);
+    if (i != m_table.end())
+    {
+        i->second.sinr = sinr;
+        i->second.lastSinrUpdate = Simulator::Now();
+        if (sinr > 0.0)
+        {
+            NS_LOG_DEBUG("Updated SINR for " << id << " to " << sinr << " (" << 10*std::log10(sinr) << " dB)");
+        }
+        else
+        {
+            NS_LOG_DEBUG("Updated SINR for " << id << " to " << sinr << " (invalid, skipped dB conversion)");
+        }
+    }
+    else
+    {
+        NS_LOG_DEBUG("UpdateSinr: neighbor " << id << " not found, ignoring");
+    }
 }
 
 Vector
@@ -149,6 +188,7 @@ PositionTable::BestNeighbor(Vector dstPosition, Vector nodePos)
 {
     NS_LOG_FUNCTION(this << dstPosition << nodePos);
 
+    // Single Purge at the beginning - DO NOT call IsNeighbour inside loop
     Purge();
 
     double initialDistance = CalculateDistance(nodePos, dstPosition);
@@ -159,21 +199,58 @@ PositionTable::BestNeighbor(Vector dstPosition, Vector nodePos)
         return Ipv4Address::GetZero();
     }
 
-    Ipv4Address bestFoundID = m_table.begin()->first;
-    double bestFoundDistance = CalculateDistance(m_table.begin()->second.first, dstPosition);
+    // SINR threshold and aging parameters
+    const double SINR_THRESHOLD = 2.0;  // Linear (~3dB)
+    const Time AGING_TIMEOUT = Seconds(1.0);
 
-    for (auto i = m_table.begin(); i != m_table.end(); ++i)
+    Ipv4Address bestQualityID = Ipv4Address::GetZero();
+    double bestQualityDistance = std::numeric_limits<double>::max();
+    Ipv4Address bestFallbackID = Ipv4Address::GetZero();
+    double bestFallbackDistance = std::numeric_limits<double>::max();
+
+    // Two-stage selection: Stage 1 (Quality Filter) and Stage 2 (Fallback)
+    for (auto& entry : m_table)
     {
-        double distance = CalculateDistance(i->second.first, dstPosition);
-        if (bestFoundDistance > distance)
+        double distance = CalculateDistance(entry.second.position, dstPosition);
+
+        // Stage 2: Track best fallback (all neighbors)
+        if (distance < bestFallbackDistance)
         {
-            bestFoundID = i->first;
-            bestFoundDistance = distance;
+            bestFallbackID = entry.first;
+            bestFallbackDistance = distance;
+        }
+
+        // Stage 1: Quality filter - valid SINR, above threshold, not aged
+        if (entry.second.sinr >= 0.0 &&  // Valid measurement
+            entry.second.sinr >= SINR_THRESHOLD &&
+            (Simulator::Now() - entry.second.lastSinrUpdate) <= AGING_TIMEOUT)
+        {
+            if (distance < bestQualityDistance)
+            {
+                bestQualityID = entry.first;
+                bestQualityDistance = distance;
+            }
         }
     }
 
-    // Only return neighbor if it's closer to destination than we are
-    if (initialDistance > bestFoundDistance)
+    // Select best candidate: prefer quality-filtered, fallback to any neighbor
+    Ipv4Address bestFoundID;
+    double bestFoundDistance;
+    if (bestQualityID != Ipv4Address::GetZero())
+    {
+        bestFoundID = bestQualityID;
+        bestFoundDistance = bestQualityDistance;
+        NS_LOG_DEBUG("Using quality-filtered neighbor: " << bestFoundID);
+    }
+    else
+    {
+        bestFoundID = bestFallbackID;
+        bestFoundDistance = bestFallbackDistance;
+        NS_LOG_DEBUG("Fallback to distance-only neighbor: " << bestFoundID);
+    }
+
+    // Progress check: Only return neighbor if it's closer to destination than we are
+    if (bestFoundID != Ipv4Address::GetZero() && initialDistance > bestFoundDistance)
     {
         NS_LOG_DEBUG("Best neighbor: " << bestFoundID << " distance: " << bestFoundDistance);
         return bestFoundID;
@@ -243,7 +320,7 @@ PositionTable::BestAngle(Vector previousHop, Vector nodePos)
 
     for (auto i = m_table.begin(); i != m_table.end(); ++i)
     {
-        tmpAngle = GetAngle(nodePos, previousHop, i->second.first);
+        tmpAngle = GetAngle(nodePos, previousHop, i->second.position);
         if (bestFoundAngle > tmpAngle && tmpAngle != 0)
         {
             bestFoundID = i->first;
@@ -277,6 +354,27 @@ bool
 PositionTable::HasPosition(Ipv4Address id)
 {
     return true;
+}
+
+std::string
+PositionTable::GetNeighborList()
+{
+    Purge();  // Remove expired entries first
+    
+    std::ostringstream oss;
+    oss << "[" << m_table.size() << " neighbors: ";
+    
+    bool first = true;
+    for (auto& entry : m_table)
+    {
+        if (!first) oss << ", ";
+        first = false;
+        oss << entry.first << "(" << entry.second.position.x << "," << entry.second.position.y 
+            << ",sinr=" << entry.second.sinr << ")";
+    }
+    oss << "]";
+    
+    return oss.str();
 }
 
 Callback<void, WifiMacHeader const&>
