@@ -313,10 +313,32 @@ namespace ns3
             // get vehicle position from sumo
             libsumo::TraCIPosition pos(this->TraCIAPI::vehicle.getPosition(veh));
 
+            // get vehicle speed and angle from sumo
+            double speed = this->TraCIAPI::vehicle.getSpeed(veh);
+            double angle = this->TraCIAPI::vehicle.getAngle(veh);  // degrees, 0=north, clockwise
+
+            // Convert SUMO angle (0=north, clockwise) to standard math angle (0=east, counter-clockwise)
+            // SUMO: 0=north, 90=east, 180=south, 270=west
+            // Math: 0=east, 90=north, 180=west, 270=south
+            // Conversion: math_angle = 90 - sumo_angle (in degrees)
+            double mathAngleRad = (90.0 - angle) * M_PI / 180.0;
+            
+            // Compute velocity components
+            double vx = speed * std::cos(mathAngleRad);
+            double vy = speed * std::sin(mathAngleRad);
+
             // get corresponding ns3 node from map
             Ptr<MobilityModel> mob = m_vehicleNodeMap.at(veh)->GetObject<MobilityModel>();
+            
             // set ns3 node position with user defined altitude
             mob->SetPosition(Vector(pos.x, pos.y, m_altitude));
+            
+            // Try to set velocity if supported by the mobility model
+            Ptr<ConstantVelocityMobilityModel> cvmm = DynamicCast<ConstantVelocityMobilityModel>(mob);
+            if (cvmm)
+              {
+                cvmm->SetVelocity(Vector(vx, vy, 0.0));
+              }
           }
       }
     catch (std::exception& e)

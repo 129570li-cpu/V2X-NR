@@ -123,11 +123,28 @@ PositionTable::UpdateSinr(Ipv4Address id, double sinr)
     auto i = m_table.find(id);
     if (i != m_table.end())
     {
+        // Update raw SINR
         i->second.sinr = sinr;
         i->second.lastSinrUpdate = Simulator::Now();
+        
+        // Apply EWMA for smoothed SINR (alpha = 0.3)
+        const double EWMA_ALPHA = 0.3;
         if (sinr > 0.0)
         {
-            NS_LOG_DEBUG("Updated SINR for " << id << " to " << sinr << " (" << 10*std::log10(sinr) << " dB)");
+            if (i->second.smoothedSinr < 0.0)
+            {
+                // First valid measurement - initialize directly
+                i->second.smoothedSinr = sinr;
+            }
+            else
+            {
+                // EWMA: smoothed = alpha * new + (1-alpha) * old
+                i->second.smoothedSinr = EWMA_ALPHA * sinr + 
+                                         (1.0 - EWMA_ALPHA) * i->second.smoothedSinr;
+            }
+            NS_LOG_DEBUG("Updated SINR for " << id << " raw=" << sinr 
+                         << " smoothed=" << i->second.smoothedSinr
+                         << " (" << 10*std::log10(i->second.smoothedSinr) << " dB)");
         }
         else
         {
@@ -493,13 +510,15 @@ PositionTable::GetTopKNeighborSummaries(uint8_t k, Vector selfPos)
         ns.x = static_cast<float>(entry.second.position.x);
         ns.y = static_cast<float>(entry.second.position.y);
         
-        // TODO: Add velocity when NeighborEntry is extended in Phase B
-        ns.vx = 0.0f;
-        ns.vy = 0.0f;
+        // Use stored velocity from NeighborEntry
+        ns.vx = static_cast<float>(entry.second.velocity.x);
+        ns.vy = static_cast<float>(entry.second.velocity.y);
         
         // Map SINR to link quality (0-255)
+        // Prefer smoothedSinr for stability, fall back to raw sinr
+        double sinrValue = (entry.second.smoothedSinr > 0) ? entry.second.smoothedSinr : entry.second.sinr;
         // Use log scale: SINR 0dB -> 0, SINR 30dB -> 255
-        double sinrDb = (entry.second.sinr > 0) ? 10.0 * std::log10(entry.second.sinr) : -10.0;
+        double sinrDb = (sinrValue > 0) ? 10.0 * std::log10(sinrValue) : -10.0;
         sinrDb = std::max(-10.0, std::min(30.0, sinrDb)); // Clamp to [-10, 30] dB
         ns.linkQuality = static_cast<uint8_t>((sinrDb + 10.0) / 40.0 * 255.0);
         
@@ -609,40 +628,90 @@ PositionTable::CalculateTwoHopScore(Ipv4Address neighborId,
     const double W_QUALITY = 0.3;
     const double W_DURATION = 0.3;
     const double COMM_RANGE = 300.0; // meters (configurable)
+    const double TWO_HOP_DECAY = 0.9; // Penalty for 2-hop paths
     
-    // 1. Progress: how much closer does this neighbor get us to destination
     double selfToDst = CalculateDistance(selfPos, dstPos);
-    double neighborToDst = CalculateDistance(neighbor.position, dstPos);
-    double progress = selfToDst - neighborToDst; // Positive = good progress
-    double progressNorm = std::max(0.0, progress / COMM_RANGE); // Normalize to [0,1]
     
-    // 2. Link Quality: use smoothed SINR if available, else raw SINR
-    double sinr = (neighbor.smoothedSinr > 0) ? neighbor.smoothedSinr : neighbor.sinr;
-    double qualityNorm = 0.0;
-    if (sinr > 0)
+    // ========== One-Hop Path Evaluation ==========
+    double neighborToDst = CalculateDistance(neighbor.position, dstPos);
+    double progress1Hop = selfToDst - neighborToDst;
+    double progress1HopNorm = std::max(0.0, progress1Hop / COMM_RANGE);
+    
+    // Link Quality for 1-hop
+    double sinr1Hop = (neighbor.smoothedSinr > 0) ? neighbor.smoothedSinr : neighbor.sinr;
+    double quality1HopNorm = 0.0;
+    if (sinr1Hop > 0)
     {
-        // Map SINR to [0,1]: 0dB->0, 30dB->1
-        double sinrDb = 10.0 * std::log10(sinr);
-        qualityNorm = std::max(0.0, std::min(1.0, (sinrDb + 10.0) / 40.0));
+        double sinrDb = 10.0 * std::log10(sinr1Hop);
+        quality1HopNorm = std::max(0.0, std::min(1.0, (sinrDb + 10.0) / 40.0));
     }
     
-    // 3. Link Duration: time until link breaks
-    double duration = CalculateLinkDuration(selfPos, selfVel, 
-                                            neighbor.position, neighbor.velocity,
-                                            COMM_RANGE);
-    // Normalize: 0s->0, 10s->1, >10s capped at 1
-    double durationNorm = std::min(1.0, duration / 10.0);
+    // Link Duration for 1-hop
+    double duration1Hop = CalculateLinkDuration(selfPos, selfVel, 
+                                                neighbor.position, neighbor.velocity,
+                                                COMM_RANGE);
+    double duration1HopNorm = std::min(1.0, duration1Hop / 10.0);
     
-    // Composite score
-    double score = W_PROGRESS * progressNorm + 
-                   W_QUALITY * qualityNorm + 
-                   W_DURATION * durationNorm;
+    double score1Hop = W_PROGRESS * progress1HopNorm + 
+                       W_QUALITY * quality1HopNorm + 
+                       W_DURATION * duration1HopNorm;
     
-    NS_LOG_DEBUG("TwoHopScore for " << neighborId << ": progress=" << progressNorm
-                 << " quality=" << qualityNorm << " duration=" << durationNorm
-                 << " -> score=" << score);
+    // ========== Two-Hop Path Evaluation ==========
+    double bestScore2Hop = -1.0;
+    Ipv4Address bestTwoHopId;
     
-    return score;
+    for (const auto& twoHop : neighbor.twoHopNeighbors)
+    {
+        // Note: We skip checking if 2-hop is self since the neighbor wouldn't include us in its list
+        
+        Vector twoHopPos(twoHop.x, twoHop.y, 0.0);
+        double twoHopToDst = CalculateDistance(twoHopPos, dstPos);
+        
+        // Progress via 2-hop: how much closer does the 2-hop neighbor get to dst
+        double progress2Hop = selfToDst - twoHopToDst;
+        double progress2HopNorm = std::max(0.0, progress2Hop / COMM_RANGE);
+        
+        // Quality: bottleneck of the two links
+        // First link: self -> neighbor (quality1HopNorm)
+        // Second link: neighbor -> 2hop (use twoHop.linkQuality, 0-255)
+        double quality2ndLink = twoHop.linkQuality / 255.0;
+        double quality2HopNorm = std::min(quality1HopNorm, quality2ndLink);
+        
+        // Duration: bottleneck of two links using twoHop.vx/vy for second hop prediction
+        Vector twoHopVel(twoHop.vx, twoHop.vy, 0.0);
+        double duration2ndHop = CalculateLinkDuration(neighbor.position, neighbor.velocity,
+                                                       twoHopPos, twoHopVel,
+                                                       COMM_RANGE);
+        double duration2ndHopNorm = std::min(1.0, duration2ndHop / 10.0);
+        // Bottleneck: use minimum of both link durations
+        double duration2HopNorm = std::min(duration1HopNorm, duration2ndHopNorm);
+        
+        double score2Hop = TWO_HOP_DECAY * (W_PROGRESS * progress2HopNorm + 
+                                            W_QUALITY * quality2HopNorm + 
+                                            W_DURATION * duration2HopNorm);
+        
+        if (score2Hop > bestScore2Hop)
+        {
+            bestScore2Hop = score2Hop;
+            bestTwoHopId = twoHop.ip;
+        }
+    }
+    
+    // ========== Final Score: max of 1-hop and best 2-hop ==========
+    double finalScore = score1Hop;
+    if (bestScore2Hop > score1Hop)
+    {
+        finalScore = bestScore2Hop;
+        NS_LOG_DEBUG("TwoHopScore for " << neighborId << ": 2-hop via " << bestTwoHopId
+                     << " score=" << bestScore2Hop << " > 1hop=" << score1Hop);
+    }
+    else
+    {
+        NS_LOG_DEBUG("TwoHopScore for " << neighborId << ": 1-hop score=" << score1Hop
+                     << " (best 2hop=" << bestScore2Hop << ")");
+    }
+    
+    return finalScore;
 }
 
 } // namespace gpsr

@@ -462,15 +462,19 @@ main(int argc, char* argv[])
      */
     Config::SetDefault("ns3::LteRlcUm::MaxTxBufferSize", UintegerValue(999999999));
 
+    // Enable GPSR debug logging to verify two-hop scoring mechanism
+    LogComponentEnable("GpsrPositionTable", LOG_LEVEL_DEBUG);
+
     // Create UE node pool - pre-allocate nodes for SUMO vehicles
     NodeContainer ueNodeContainer;
     uint16_t ueNum = 50;  // Max concurrent vehicles from SUMO
     ueNodeContainer.Create(ueNum);
 
-    // Setup initial mobility (far away from simulation area)
+    // Setup initial mobility with velocity support
+    // Using ConstantVelocityMobilityModel allows TraCI to update velocity from SUMO
     // Nodes will be moved to correct positions by TraCI when vehicles depart
     MobilityHelper initialMobility;
-    initialMobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+    initialMobility.SetMobilityModel("ns3::ConstantVelocityMobilityModel");
     Ptr<GridPositionAllocator> gridAlloc = CreateObject<GridPositionAllocator>();
     gridAlloc->SetAttribute("MinX", DoubleValue(10000.0));  // 10km away from simulation
     gridAlloc->SetAttribute("MinY", DoubleValue(10000.0));

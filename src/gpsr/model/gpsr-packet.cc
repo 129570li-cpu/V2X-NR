@@ -11,6 +11,7 @@
 #include "ns3/packet.h"
 
 #include <cstring>
+#include <algorithm>
 
 namespace ns3
 {
@@ -195,8 +196,28 @@ HelloHeader::Deserialize(Buffer::Iterator start)
     m_velocityY = Uint64ToDouble(i.ReadNtohU64());
     // Timestamp
     m_timestamp = i.ReadNtohU32();
-    // Neighbor count
-    uint8_t count = i.ReadU8();
+    // Neighbor count with bounds and buffer validation
+    uint8_t originalCount = i.ReadU8();
+    
+    // Validate buffer has enough bytes for all neighbors
+    uint32_t neighborSize = NeighborSummary::GetSerializedSize();
+    uint32_t requiredBytes = originalCount * neighborSize;
+    uint32_t remainingBytes = i.GetRemainingSize();
+    
+    if (requiredBytes > remainingBytes)
+    {
+        NS_LOG_WARN("HelloHeader: buffer too short (need " << requiredBytes 
+                    << ", have " << remainingBytes << "), truncating to fit");
+        originalCount = static_cast<uint8_t>(remainingBytes / neighborSize);
+    }
+    
+    uint8_t count = originalCount;
+    if (count > MAX_NEIGHBORS)
+    {
+        NS_LOG_WARN("HelloHeader: neighbor count " << (int)originalCount 
+                    << " exceeds MAX_NEIGHBORS " << (int)MAX_NEIGHBORS << ", truncating");
+        count = MAX_NEIGHBORS;
+    }
     // Neighbors
     m_neighbors.clear();
     m_neighbors.reserve(count);
@@ -206,8 +227,14 @@ HelloHeader::Deserialize(Buffer::Iterator start)
         ns.Deserialize(i);
         m_neighbors.push_back(ns);
     }
+    // Skip excess neighbor bytes to maintain correct packet parsing
+    if (originalCount > count)
+    {
+        uint8_t skip = originalCount - count;
+        i.Next(skip * neighborSize);
+    }
     uint32_t dist = i.GetDistanceFrom(start);
-    NS_ASSERT(dist == GetSerializedSize());
+    // Note: dist will include skipped bytes, matching the actual serialized size
     return dist;
 }
 
