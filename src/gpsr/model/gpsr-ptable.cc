@@ -416,6 +416,51 @@ PositionTable::GetAngle(Vector centrePos, Vector refPos, Vector node)
     return angle;
 }
 
+// ============ GG Planarization Helpers (Anonymous Namespace) ============
+namespace
+{
+
+// Helper: squared distance (avoids sqrt for precision and performance)
+inline double CalculateDistanceSq(Vector a, Vector b)
+{
+    double dx = a.x - b.x;
+    double dy = a.y - b.y;
+    double dz = a.z - b.z;
+    return dx * dx + dy * dy + dz * dz;
+}
+
+// Check if edge (U, V) belongs to Gabriel Graph
+// Returns false if any witness W exists inside the circle with diameter UV
+bool IsGabrielGraphEdge(
+    const std::map<Ipv4Address, PositionTable::NeighborEntry>& table,
+    Vector U,
+    Vector V,
+    Ipv4Address vId)
+{
+    double d_uv_sq = CalculateDistanceSq(U, V);
+
+    for (const auto& entry : table)
+    {
+        if (entry.first == vId)
+            continue; // Skip V itself
+
+        Vector W = entry.second.position;
+        double d_uw_sq = CalculateDistanceSq(U, W);
+        double d_vw_sq = CalculateDistanceSq(V, W);
+
+        // Gabriel Graph violation: W is inside/on circle with diameter UV
+        // Condition: d(u,w)^2 + d(v,w)^2 <= d(u,v)^2
+        if (d_uw_sq + d_vw_sq <= d_uv_sq + 1e-9)
+        {
+            return false; // Edge is blocked by witness W
+        }
+    }
+    return true;
+}
+
+} // anonymous namespace
+
+// ============ BestAngle (GG-Aware Multi-Pass) ============
 Ipv4Address
 PositionTable::BestAngle(Vector previousHop, Vector nodePos)
 {
@@ -425,31 +470,51 @@ PositionTable::BestAngle(Vector previousHop, Vector nodePos)
 
     if (m_table.empty())
     {
-        NS_LOG_DEBUG("BestAngle table is empty; Position: " << nodePos);
+        NS_LOG_DEBUG("BestAngle: table is empty");
         return Ipv4Address::GetZero();
     }
 
-    double tmpAngle;
+    // === Paper-Compliant Right-Hand Rule on Gabriel Graph ===
+    // No prev-hop heuristic exclusion (paper does not have this)
+    // Only consider GG-planarized neighbors
+    
     Ipv4Address bestFoundID = Ipv4Address::GetZero();
     double bestFoundAngle = 360.0;
 
-    for (auto i = m_table.begin(); i != m_table.end(); ++i)
+    for (const auto& entry : m_table)
     {
-        tmpAngle = GetAngle(nodePos, previousHop, i->second.position);
+        // Skip neighbors at previousHop position (epsilon compare to avoid float errors)
+        double dx = entry.second.position.x - previousHop.x;
+        double dy = entry.second.position.y - previousHop.y;
+        if (dx * dx + dy * dy < 0.01)  // Within 0.1m of previous hop
+        {
+            continue;
+        }
+
+        // GG Check: Skip if not a Gabriel Graph edge
+        if (!IsGabrielGraphEdge(m_table, nodePos, entry.second.position, entry.first))
+        {
+            continue;
+        }
+
+        double tmpAngle = GetAngle(nodePos, previousHop, entry.second.position);
         if (bestFoundAngle > tmpAngle && tmpAngle != 0)
         {
-            bestFoundID = i->first;
+            bestFoundID = entry.first;
             bestFoundAngle = tmpAngle;
         }
     }
 
-    // If only neighbor is who sent the packet, use first neighbor
-    if (bestFoundID == Ipv4Address::GetZero() && !m_table.empty())
+    if (bestFoundID != Ipv4Address::GetZero())
     {
-        bestFoundID = m_table.begin()->first;
+        NS_LOG_DEBUG("BestAngle: Found GG neighbor " << bestFoundID << " angle=" << bestFoundAngle);
+    }
+    else
+    {
+        // No valid GG neighbor found - caller (RecoveryMode) handles this via loop detection
+        NS_LOG_DEBUG("BestAngle: No valid GG neighbor found. Returning Zero.");
     }
 
-    NS_LOG_DEBUG("Best angle neighbor: " << bestFoundID << " angle: " << bestFoundAngle);
     return bestFoundID;
 }
 

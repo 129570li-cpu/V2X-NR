@@ -285,7 +285,11 @@ PositionHeader::PositionHeader(double dstPosx,
                                double recPosy,
                                uint8_t inRec,
                                double lastPosx,
-                               double lastPosy)
+                               double lastPosy,
+                               double lfPosx,
+                               double lfPosy,
+                               uint32_t e0From,
+                               uint32_t e0To)
     : m_dstPosx(dstPosx),
       m_dstPosy(dstPosy),
       m_updated(updated),
@@ -293,7 +297,11 @@ PositionHeader::PositionHeader(double dstPosx,
       m_recPosy(recPosy),
       m_inRec(inRec),
       m_lastPosx(lastPosx),
-      m_lastPosy(lastPosy)
+      m_lastPosy(lastPosy),
+      m_lfPosx(lfPosx),
+      m_lfPosy(lfPosy),
+      m_e0From(e0From),
+      m_e0To(e0To)
 {
 }
 
@@ -314,8 +322,9 @@ PositionHeader::GetInstanceTypeId() const
 uint32_t
 PositionHeader::GetSerializedSize() const
 {
-    // 6 * sizeof(double) + sizeof(uint32_t) + sizeof(uint8_t) = 6*8 + 4 + 1 = 53
-    return 53;
+    // 8 * sizeof(double) + sizeof(uint32_t) + sizeof(uint8_t) + 2*sizeof(uint32_t)
+    // = 8*8 + 4 + 1 + 8 = 77 bytes
+    return 77;
 }
 
 void
@@ -329,6 +338,10 @@ PositionHeader::Serialize(Buffer::Iterator i) const
     i.WriteU8(m_inRec);
     i.WriteHtonU64(DoubleToUint64(m_lastPosx));
     i.WriteHtonU64(DoubleToUint64(m_lastPosy));
+    i.WriteHtonU64(DoubleToUint64(m_lfPosx));
+    i.WriteHtonU64(DoubleToUint64(m_lfPosy));
+    i.WriteHtonU32(m_e0From);
+    i.WriteHtonU32(m_e0To);
 }
 
 uint32_t
@@ -343,6 +356,10 @@ PositionHeader::Deserialize(Buffer::Iterator start)
     m_inRec = i.ReadU8();
     m_lastPosx = Uint64ToDouble(i.ReadNtohU64());
     m_lastPosy = Uint64ToDouble(i.ReadNtohU64());
+    m_lfPosx = Uint64ToDouble(i.ReadNtohU64());
+    m_lfPosy = Uint64ToDouble(i.ReadNtohU64());
+    m_e0From = i.ReadNtohU32();
+    m_e0To = i.ReadNtohU32();
     uint32_t dist = i.GetDistanceFrom(start);
     NS_ASSERT(dist == GetSerializedSize());
     return dist;
@@ -355,7 +372,9 @@ PositionHeader::Print(std::ostream& os) const
        << "Updated: " << m_updated << " "
        << "RecPos: (" << m_recPosx << "," << m_recPosy << ") "
        << "InRec: " << (int)m_inRec << " "
-       << "LastPos: (" << m_lastPosx << "," << m_lastPosy << ")";
+       << "LastPos: (" << m_lastPosx << "," << m_lastPosy << ") "
+       << "LfPos: (" << m_lfPosx << "," << m_lfPosy << ") "
+       << "e0: (" << m_e0From << "->" << m_e0To << ")";
 }
 
 bool
@@ -363,7 +382,9 @@ PositionHeader::operator==(const PositionHeader& o) const
 {
     return (m_dstPosx == o.m_dstPosx && m_dstPosy == o.m_dstPosy && m_updated == o.m_updated &&
             m_recPosx == o.m_recPosx && m_recPosy == o.m_recPosy && m_inRec == o.m_inRec &&
-            m_lastPosx == o.m_lastPosx && m_lastPosy == o.m_lastPosy);
+            m_lastPosx == o.m_lastPosx && m_lastPosy == o.m_lastPosy &&
+            m_lfPosx == o.m_lfPosx && m_lfPosy == o.m_lfPosy &&
+            m_e0From == o.m_e0From && m_e0To == o.m_e0To);
 }
 
 std::ostream&

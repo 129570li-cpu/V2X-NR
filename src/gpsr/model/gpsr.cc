@@ -42,6 +42,102 @@ namespace gpsr
 /// Maximum allowed jitter
 #define GPSR_MAXJITTER (m_helloInterval.GetSeconds() / 2)
 
+// ============ Geometry Helpers for Perimeter Mode ============
+namespace
+{
+
+// Calculate squared distance between two points
+inline double
+CalculateDistanceSq(double x1, double y1, double x2, double y2)
+{
+    double dx = x1 - x2;
+    double dy = y1 - y2;
+    return dx * dx + dy * dy;
+}
+
+// Check if two line segments (A-B) and (C-D) intersect
+// If they intersect, store the intersection point in (outX, outY)
+// Returns true if there is a valid intersection point
+// Handles collinear case: finds overlap point closest to B (destination)
+bool
+SegmentIntersect2D(double ax, double ay, double bx, double by,
+                   double cx, double cy, double dx, double dy,
+                   double& outX, double& outY)
+{
+    double denom = (bx - ax) * (dy - cy) - (by - ay) * (dx - cx);
+    
+    // Non-collinear case: standard intersection
+    if (std::abs(denom) >= 1e-9)
+    {
+        double t = ((cx - ax) * (dy - cy) - (cy - ay) * (dx - cx)) / denom;
+        double u = ((cx - ax) * (by - ay) - (cy - ay) * (bx - ax)) / denom;
+
+        if (t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0)
+        {
+            outX = ax + t * (bx - ax);
+            outY = ay + t * (by - ay);
+            return true;
+        }
+        return false;
+    }
+    
+    // Collinear case: check if segments overlap
+    // Use Euclidean length for proper normalization
+    double abLenSq = (bx - ax) * (bx - ax) + (by - ay) * (by - ay);
+    double cdLenSq = (dx - cx) * (dx - cx) + (dy - cy) * (dy - cy);
+    
+    if (abLenSq < 1e-18 || cdLenSq < 1e-18)
+        return false;  // Degenerate segment
+    
+    // Parameterize C and D on line AB
+    double tC, tD;
+    if (std::abs(bx - ax) > std::abs(by - ay))
+    {
+        tC = (cx - ax) / (bx - ax);
+        tD = (dx - ax) / (bx - ax);
+    }
+    else
+    {
+        tC = (cy - ay) / (by - ay);
+        tD = (dy - ay) / (by - ay);
+    }
+    
+    // Check collinearity using squared cross-product vs squared length
+    // Cross product: (C-A) x (B-A) and (D-A) x (B-A)
+    double crossC = (cx - ax) * (by - ay) - (cy - ay) * (bx - ax);
+    double crossD = (dx - ax) * (by - ay) - (dy - ay) * (bx - ax);
+    // Compare cross^2 < epsilon * length^2 (avoids sqrt)
+    double collinearThresholdSq = 1e-12 * abLenSq;
+    if (crossC * crossC > collinearThresholdSq || crossD * crossD > collinearThresholdSq)
+        return false;  // Not actually collinear
+    
+    // Find overlap: intersection of [0,1] and [tC,tD]
+    double tMin = std::max(0.0, std::min(tC, tD));
+    double tMax = std::min(1.0, std::max(tC, tD));
+    
+    if (tMin > tMax + 1e-9)
+        return false;  // No overlap
+    
+    // Return point closest to B (t=1)
+    double tBest = std::min(tMax, 1.0);
+    outX = ax + tBest * (bx - ax);
+    outY = ay + tBest * (by - ay);
+    return true;
+}
+
+// Compare two undirected edges (u1, v1) and (u2, v2)
+// Edges are equal if they connect the same pair of nodes (order-independent)
+bool
+EdgeEqual(uint32_t u1, uint32_t v1, uint32_t u2, uint32_t v2)
+{
+    // Normalize by sorting
+    if (u1 > v1) std::swap(u1, v1);
+    if (u2 > v2) std::swap(u2, v2);
+    return (u1 == u2) && (v1 == v2);
+}
+
+} // anonymous namespace
+
 // DeferredRouteOutputTag implementation
 NS_OBJECT_ENSURE_REGISTERED(DeferredRouteOutputTag);
 
@@ -989,8 +1085,7 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
         hdr.SetInRec(1);
         hdr.SetRecPosx(myPos.x);
         hdr.SetRecPosy(myPos.y);
-        hdr.SetLastPosx(Position.x);
-        hdr.SetLastPosy(Position.y);
+        // Keep original lastPos from packet (incoming edge) - do NOT overwrite
 
         p->AddHeader(hdr);
         p->AddHeader(tHeader);
@@ -1016,19 +1111,14 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
 {
     NS_LOG_FUNCTION(this << dst);
 
-    // Get my position
+    // Get my position and IP
     Ptr<MobilityModel> mm = m_ipv4->GetObject<MobilityModel>();
     Vector myPos = mm->GetPosition();
+    Ipv4Address myIp = m_ipv4->GetAddress(1, 0).GetLocal();
 
-    // Parse headers to get previous hop position
-    Vector Position;
-    Vector previousHop;
-    uint32_t updated;
-    Vector recPos;
-
+    // Parse GPSR headers
     TypeHeader tHeader(GPSRTYPE_POS);
     
-    // FIX: Check Tag and Size before RemoveHeader
     GpsrHeaderTag tag;
     if (!p->PeekPacketTag(tag) || tag.GetType() != GPSRTYPE_POS)
     {
@@ -1050,43 +1140,140 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
         return;
     }
 
-    if (tHeader.Get() == GPSRTYPE_POS)
-    {
-        PositionHeader hdr;
-        p->RemoveHeader(hdr);
-        Position.x = hdr.GetDstPosx();
-        Position.y = hdr.GetDstPosy();
-        updated = hdr.GetUpdated();
-        recPos.x = hdr.GetRecPosx();
-        recPos.y = hdr.GetRecPosy();
-        previousHop.x = hdr.GetLastPosx();
-        previousHop.y = hdr.GetLastPosy();
+    PositionHeader hdr;
+    p->RemoveHeader(hdr);
+    
+    // Extract header fields
+    Vector dstPos(hdr.GetDstPosx(), hdr.GetDstPosy(), 0);
+    Vector recPos(hdr.GetRecPosx(), hdr.GetRecPosy(), 0);   // Lp (Perimeter entry point)
+    Vector previousHop(hdr.GetLastPosx(), hdr.GetLastPosy(), 0);
+    Vector lfPos(hdr.GetLfPosx(), hdr.GetLfPosy(), 0);      // Lf (Face crossing point)
+    uint32_t e0From = hdr.GetE0From();
+    uint32_t e0To = hdr.GetE0To();
+    uint8_t inRec = hdr.GetInRec();
+    uint32_t updated = hdr.GetUpdated();
 
-        // Update header with current position as last hop
-        PositionHeader posHeader(Position.x,
-                                 Position.y,
-                                 updated,
-                                 recPos.x,
-                                 recPos.y,
-                                 (uint8_t)1,
-                                 myPos.x,
-                                 myPos.y);
-        p->AddHeader(posHeader);
+    // === Greedy Return Check ===
+    // If current node is closer to D than Lp, return to greedy mode
+    double distMyToD = CalculateDistanceSq(myPos.x, myPos.y, dstPos.x, dstPos.y);
+    double distLpToD = CalculateDistanceSq(recPos.x, recPos.y, dstPos.x, dstPos.y);
+    
+    if (inRec == 1 && distMyToD < distLpToD - 1e-9)
+    {
+        NS_LOG_DEBUG("RecoveryMode: Greedy return! distSq to D: " 
+                     << distMyToD << " < " << distLpToD << ". Switching to Greedy.");
+        
+        // Rebuild header with cleared perimeter state
+        PositionHeader greedyHeader(dstPos.x, dstPos.y, updated,
+                                    0.0, 0.0, 0,  // Clear Lp and inRec
+                                    myPos.x, myPos.y,
+                                    0.0, 0.0, 0, 0);  // Clear Lf and e0
+        p->AddHeader(greedyHeader);
         p->AddHeader(tHeader);
-        // Sync tag with header
-        GpsrHeaderTag tag(GPSRTYPE_POS);
-        if (!p->PeekPacketTag(tag)) { p->AddPacketTag(tag); }
+        GpsrHeaderTag newTag(GPSRTYPE_POS);
+        if (!p->PeekPacketTag(newTag)) { p->AddPacketTag(newTag); }
+        
+        // Call Forwarding (greedy mode) instead of continuing perimeter
+        // Note: Forwarding expects (packet, header, ucb, ecb)
+        bool greedySuccess = Forwarding(p, header, ucb, 
+            [](Ptr<const Packet>, const Ipv4Header&, Socket::SocketErrno){
+                // Empty callback - logging not possible in lambda context due to NS_LOG_APPEND_CONTEXT
+            });
+        if (!greedySuccess)
+        {
+            NS_LOG_DEBUG("RecoveryMode: Greedy return failed, dropping packet");
+        }
+        return;  // EXIT RecoveryMode
     }
 
-    // Find best angle neighbor (right hand rule)
+    // === Right-Hand Rule: Find Next Hop (Perimeter continues) ===
     Ipv4Address nextHop = m_neighbors.BestAngle(previousHop, myPos);
 
     if (nextHop == Ipv4Address::GetZero())
     {
-        NS_LOG_DEBUG("Recovery mode failed for " << dst);
+        NS_LOG_DEBUG("RecoveryMode: BestAngle returned Zero. No valid neighbor. Drop.");
         return;
     }
 
+    // Get next hop position for geometry calculations
+    Vector nextHopPos = m_neighbors.GetPosition(nextHop);
+
+    // === Perimeter Entry Initialization ===
+    // Only enter if truly starting perimeter (not from greedy return)
+    if (e0From == 0 && e0To == 0)
+    {
+        // Entering perimeter mode: initialize Lp, Lf, e0
+        inRec = 1;
+        recPos = myPos;  // Lp = current position
+        e0From = myIp.Get();
+        e0To = nextHop.Get();
+        
+        // Calculate Lf = intersection of (Lp -> D) and (myPos -> nextHop)
+        double lfX = recPos.x, lfY = recPos.y;  // Default: Lf = Lp
+        SegmentIntersect2D(recPos.x, recPos.y, dstPos.x, dstPos.y,
+                           myPos.x, myPos.y, nextHopPos.x, nextHopPos.y,
+                           lfX, lfY);
+        lfPos = Vector(lfX, lfY, 0);
+        
+        NS_LOG_DEBUG("RecoveryMode: Entering perimeter. Lp=(" << recPos.x << "," << recPos.y 
+                     << ") e0=(" << Ipv4Address(e0From) << "->" << Ipv4Address(e0To) 
+                     << ") Lf=(" << lfPos.x << "," << lfPos.y << ")");
+    }
+    else
+    {
+        // === Loop Detection ===
+        // Check if current edge equals e0 (returned to starting edge)
+        uint32_t currentEdgeFrom = myIp.Get();
+        uint32_t currentEdgeTo = nextHop.Get();
+        
+        if (EdgeEqual(currentEdgeFrom, currentEdgeTo, e0From, e0To))
+        {
+            // Check if Lf has changed (progress was made)
+            double lfDistSq = CalculateDistanceSq(lfPos.x, lfPos.y, hdr.GetLfPosx(), hdr.GetLfPosy());
+            if (lfDistSq < 1e-6)  // Lf unchanged
+            {
+                NS_LOG_DEBUG("RecoveryMode: LOOP DETECTED - Returned to e0 with same Lf. Dropping packet.");
+                return;  // Drop packet
+            }
+        }
+
+        // === Face Switching ===
+        // Check if new edge intersects (Lp -> D)
+        double intersectX, intersectY;
+        bool hasIntersect = SegmentIntersect2D(
+            recPos.x, recPos.y, dstPos.x, dstPos.y,
+            myPos.x, myPos.y, nextHopPos.x, nextHopPos.y,
+            intersectX, intersectY);
+
+        if (hasIntersect)
+        {
+            double distIntersectToD = CalculateDistanceSq(intersectX, intersectY, dstPos.x, dstPos.y);
+            double distLfToD = CalculateDistanceSq(lfPos.x, lfPos.y, dstPos.x, dstPos.y);
+            
+            if (distIntersectToD < distLfToD - 1e-9)
+            {
+                // Intersection is closer to D than current Lf -> Switch Face
+                lfPos = Vector(intersectX, intersectY, 0);
+                e0From = myIp.Get();
+                e0To = nextHop.Get();
+                NS_LOG_DEBUG("RecoveryMode: Face switch! New Lf=(" << lfPos.x << "," << lfPos.y 
+                             << ") e0=(" << Ipv4Address(e0From) << "->" << Ipv4Address(e0To) << ")");
+            }
+        }
+    }
+
+    // === Build Updated Header ===
+    PositionHeader posHeader(dstPos.x, dstPos.y, updated,
+                             recPos.x, recPos.y, inRec,
+                             myPos.x, myPos.y,
+                             lfPos.x, lfPos.y,
+                             e0From, e0To);
+    p->AddHeader(posHeader);
+    p->AddHeader(tHeader);
+    GpsrHeaderTag newTag(GPSRTYPE_POS);
+    if (!p->PeekPacketTag(newTag)) { p->AddPacketTag(newTag); }
+
+    // === Forward Packet ===
     Ptr<Ipv4Route> route = Create<Ipv4Route>();
     route->SetDestination(dst);
     route->SetGateway(nextHop);
@@ -1095,27 +1282,24 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
 
     NS_LOG_LOGIC("Recovery forwarding to " << dst << " via " << nextHop);
     
-    // Add GpsrNextHopTag to pass next-hop info to EpcUeNas for TFT matching
+    // TTL Management
     GpsrNextHopTag existingNhTag;
     if (p->PeekPacketTag(existingNhTag))
     {
-        // FIX: Drop packet if TTL has reached 0 (loop prevention)
         uint8_t ttl = existingNhTag.GetTtl();
         if (ttl == 0)
         {
             NS_LOG_DEBUG("RecoveryMode: GpsrNextHopTag TTL=0, dropping packet to prevent loop");
-            return;  // Drop the packet
+            return;
         }
         p->RemovePacketTag(existingNhTag);
         GpsrNextHopTag nhTag(nextHop, ttl - 1);
         p->AddPacketTag(nhTag);
-        NS_LOG_DEBUG("RecoveryMode: Updated GpsrNextHopTag: nextHop=" << nextHop << " ttl=" << (int)(ttl - 1));
     }
     else
     {
         GpsrNextHopTag nhTag(nextHop, 63);
         p->AddPacketTag(nhTag);
-        NS_LOG_DEBUG("RecoveryMode: Added GpsrNextHopTag: nextHop=" << nextHop << " ttl=63");
     }
     
     ucb(route, p, header);

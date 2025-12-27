@@ -203,7 +203,11 @@ class PositionHeader : public Header
                    double recPosy = 0.0,
                    uint8_t inRec = 0,
                    double lastPosx = 0.0,
-                   double lastPosy = 0.0);
+                   double lastPosy = 0.0,
+                   double lfPosx = 0.0,
+                   double lfPosy = 0.0,
+                   uint32_t e0From = 0,
+                   uint32_t e0To = 0);
 
     static TypeId GetTypeId();
     TypeId GetInstanceTypeId() const override;
@@ -292,6 +296,48 @@ class PositionHeader : public Header
         return m_lastPosy;
     }
 
+    // Lf (Face Location) accessors
+    void SetLfPosx(double posx)
+    {
+        m_lfPosx = posx;
+    }
+
+    double GetLfPosx() const
+    {
+        return m_lfPosx;
+    }
+
+    void SetLfPosy(double posy)
+    {
+        m_lfPosy = posy;
+    }
+
+    double GetLfPosy() const
+    {
+        return m_lfPosy;
+    }
+
+    // e0 (First Edge) accessors - stored as raw IP uint32_t
+    void SetE0From(uint32_t ip)
+    {
+        m_e0From = ip;
+    }
+
+    uint32_t GetE0From() const
+    {
+        return m_e0From;
+    }
+
+    void SetE0To(uint32_t ip)
+    {
+        m_e0To = ip;
+    }
+
+    uint32_t GetE0To() const
+    {
+        return m_e0To;
+    }
+
     bool operator==(const PositionHeader& o) const;
 
   private:
@@ -303,6 +349,10 @@ class PositionHeader : public Header
     uint8_t m_inRec;
     double m_lastPosx;
     double m_lastPosy;
+    double m_lfPosx;      // Lf: Face location X
+    double m_lfPosy;      // Lf: Face location Y
+    uint32_t m_e0From;    // e0: First edge source (IP as uint32_t)
+    uint32_t m_e0To;      // e0: First edge target (IP as uint32_t)
 };
 
 std::ostream& operator<<(std::ostream& os, const PositionHeader& h);
