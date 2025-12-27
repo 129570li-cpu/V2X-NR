@@ -22,6 +22,7 @@
 #include "ns3/timer.h"
 
 #include <map>
+#include <unordered_map>
 
 namespace ns3
 {
@@ -204,6 +205,10 @@ class RoutingProtocol : public Ipv4RoutingProtocol
 
     /// IP layer down target callback for sending packets
     IpL4Protocol::DownTargetCallback m_downTarget;
+
+    /// Local delivery UID dedup cache (prevent duplicate local delivery)
+    std::unordered_map<uint64_t, Time> m_localDeliverCache;
+    Time m_localDeliverWindow{MilliSeconds(10)};  ///< Dedup window
 
   public:
     /// Set the down target callback

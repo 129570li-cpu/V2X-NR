@@ -580,6 +580,11 @@ Ipv4L3Protocol::Receive(Ptr<NetDevice> device,
 
     Ptr<Packet> packet = p->Copy();
 
+    // Diagnostic: log packet UID and pointer to check for duplicate entries
+    NS_LOG_DEBUG("Ipv4L3Protocol::Receive UID=" << packet->GetUid() 
+                 << " pkt=" << packet.operator->() 
+                 << " origP=" << p.operator->());
+
     Ptr<Ipv4Interface> ipv4Interface = m_interfaces[interface];
 
     if (ipv4Interface->IsUp())

@@ -828,6 +828,26 @@ RoutingProtocol::RouteInput(Ptr<const Packet> p,
     // Local delivery check
     if (m_ipv4->IsDestinationAddress(dst, iif))
     {
+        // UID-based dedup: prevent duplicate local delivery (same UID within time window)
+        const uint64_t uid = p->GetUid();
+        const Time now = Simulator::Now();
+        auto it = m_localDeliverCache.find(uid);
+        if (it != m_localDeliverCache.end() && (now - it->second) <= m_localDeliverWindow)
+        {
+            NS_LOG_DEBUG("LocalDelivery: duplicate UID " << uid << ", skip");
+            return true;  // Already processed, swallow duplicate
+        }
+        m_localDeliverCache[uid] = now;
+
+        // Optional: clean expired entries
+        for (auto iter = m_localDeliverCache.begin(); iter != m_localDeliverCache.end(); )
+        {
+            if (now - iter->second > m_localDeliverWindow)
+                iter = m_localDeliverCache.erase(iter);
+            else
+                ++iter;
+        }
+
         Ptr<Packet> packet = p->Copy();
 
         // Remove GPSR headers if this is a UDP data packet (not HELLO, not ICMP)
@@ -836,24 +856,46 @@ RoutingProtocol::RouteInput(Ptr<const Packet> p,
         // FIX: Also check for fragmentation. GPSR does not support fragmentation.
         // We must drop ANY fragmented packet (offset != 0 OR not last fragment).
         GpsrHeaderTag gpsrTag;
+        GpsrLocalDeliveredTag localDeliveredTag;
         uint32_t minGpsrSize = TypeHeader().GetSerializedSize() + PositionHeader().GetSerializedSize();
         
-        if (header.GetProtocol() == UdpL4Protocol::PROT_NUMBER && // UDP only
+        // Check if already processed (prevent duplicate local delivery)
+        if (packet->PeekPacketTag(localDeliveredTag))
+        {
+            NS_LOG_DEBUG("LocalDelivery: Already processed (GpsrLocalDeliveredTag present), skipping");
+        }
+        else if (header.GetProtocol() == UdpL4Protocol::PROT_NUMBER && // UDP only
             header.GetFragmentOffset() == 0 && header.IsLastFragment() && // No fragmentation allowed
             packet->GetSize() >= minGpsrSize && // Sufficient size for GPSR headers
             packet->PeekPacketTag(gpsrTag) && gpsrTag.GetType() == GPSRTYPE_POS)
         {
-            NS_LOG_DEBUG("LocalDelivery Check: Size=" << packet->GetSize() 
-                         << " FragOff=" << header.GetFragmentOffset()
-                         << " LastFrag=" << header.IsLastFragment()
-                         << " Tag=" << (int)gpsrTag.GetType());
-
+            // Validate TypeHeader before removing (防止 stale tag 导致错误剥离)
             TypeHeader tHeader(GPSRTYPE_POS);
-            packet->RemoveHeader(tHeader);
-            PositionHeader phdr;
-            packet->RemoveHeader(phdr);
-            packet->RemovePacketTag(gpsrTag);
-            NS_LOG_DEBUG("Removed GPSR headers for local delivery");
+            uint32_t preSize = packet->GetSize();
+            uint32_t peekedBytes = packet->PeekHeader(tHeader);
+            
+            NS_LOG_DEBUG("LocalDelivery Check: Size=" << preSize 
+                         << " UID=" << packet->GetUid()
+                         << " PeekTypeHeader=" << peekedBytes
+                         << " TypeValid=" << tHeader.IsValid()
+                         << " Tag=" << (int)gpsrTag.GetType());
+            
+            if (peekedBytes > 0 && tHeader.IsValid())
+            {
+                packet->RemoveHeader(tHeader);
+                PositionHeader phdr;
+                packet->RemoveHeader(phdr);
+                packet->RemovePacketTag(gpsrTag);
+                packet->AddPacketTag(localDeliveredTag);  // Mark as processed
+                NS_LOG_DEBUG("Removed GPSR headers: pre=" << preSize << " post=" << packet->GetSize());
+            }
+            else
+            {
+                // Stale tag or corrupted header - just clear tag, don't strip
+                NS_LOG_DEBUG("LocalDelivery: TypeHeader invalid/stale - clearing tag only");
+                packet->RemovePacketTag(gpsrTag);
+                packet->AddPacketTag(localDeliveredTag);  // Mark as processed
+            }
         }
         else if (packet->PeekPacketTag(gpsrTag) && gpsrTag.GetType() == GPSRTYPE_POS)
         {

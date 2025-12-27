@@ -396,6 +396,10 @@ PositionHeader::Deserialize(Buffer::Iterator start)
         i.ReadNtohU64();   // z
     }
     uint32_t dist = i.GetDistanceFrom(start);
+    NS_LOG_DEBUG("PositionHeader::Deserialize: packetNhops=" << (int)packetNhops 
+                 << " m_nhops=" << (int)m_nhops 
+                 << " bytesRead=" << dist 
+                 << " expectedSize=" << GetSerializedSize());
     // Note: dist will match serialized size with packetNhops, not m_nhops
     return dist;
 }

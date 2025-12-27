@@ -594,6 +594,29 @@ class GpsrNextHopTag : public Tag
     uint8_t m_ttl;
 };
 
+/**
+ * \ingroup gpsr
+ * \brief Tag to mark packet as already processed for local delivery
+ * Prevents duplicate local delivery when IP layer calls RouteInput multiple times
+ */
+class GpsrLocalDeliveredTag : public Tag
+{
+  public:
+    static TypeId GetTypeId()
+    {
+        static TypeId tid = TypeId("ns3::gpsr::GpsrLocalDeliveredTag")
+                                .SetParent<Tag>()
+                                .AddConstructor<GpsrLocalDeliveredTag>();
+        return tid;
+    }
+
+    TypeId GetInstanceTypeId() const override { return GetTypeId(); }
+    uint32_t GetSerializedSize() const override { return 0; }
+    void Serialize(TagBuffer) const override {}
+    void Deserialize(TagBuffer) override {}
+    void Print(std::ostream& os) const override { os << "LocalDelivered"; }
+};
+
 } // namespace gpsr
 } // namespace ns3
 
