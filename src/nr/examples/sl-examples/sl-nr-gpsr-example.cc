@@ -464,6 +464,10 @@ main(int argc, char* argv[])
 
     // Enable GPSR debug logging to verify two-hop scoring mechanism
     LogComponentEnable("GpsrPositionTable", LOG_LEVEL_DEBUG);
+    // Enable EpcUeNas to debug TFT matching and dstL2Id
+    LogComponentEnable("EpcUeNas", LOG_LEVEL_INFO);
+    // Enable GPSR routing to see forwarding decisions
+    LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_INFO);
 
     // Create UE node pool - pre-allocate nodes for SUMO vehicles
     NodeContainer ueNodeContainer;

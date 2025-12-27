@@ -111,9 +111,28 @@ class PositionTable
      * \brief Gets best neighbor for perimeter forwarding (right-hand rule)
      * \param previousHop Position of the previous hop
      * \param nodePos Position of the current node
+     * \param excludeIp Optional IP to exclude (use instead of position threshold)
      * \return IPv4 address of the best neighbor
      */
-    Ipv4Address BestAngle(Vector previousHop, Vector nodePos);
+    Ipv4Address BestAngle(Vector previousHop, Vector nodePos, Ipv4Address excludeIp = Ipv4Address::GetZero());
+
+    /**
+     * \brief Find face toward destination (NS-2 ent_findface equivalent)
+     * Returns the GG neighbor with bearing closest to destination bearing
+     * \param dstPos Destination position
+     * \param nodePos Current node position
+     * \return IPv4 address of the face entry neighbor
+     */
+    Ipv4Address FindFace(Vector dstPos, Vector nodePos);
+
+    /**
+     * \brief Get next neighbor counter-clockwise from given neighbor (NS-2 ent_next_ccw)
+     * Only considers GG edges in planarized graph
+     * \param inNeighbor Current neighbor (incoming edge)
+     * \param nodePos Current node position
+     * \return Next CCW neighbor on current face
+     */
+    Ipv4Address NextCCW(Ipv4Address inNeighbor, Vector nodePos);
 
     /**
      * \brief Calculate angle between vectors (counterclockwise)
@@ -208,6 +227,7 @@ class PositionTable
                                 Vector selfPos,
                                 Vector selfVel);
 
+
     /**
      * \brief Neighbor entry structure with position, velocity, SINR, and two-hop data
      */
@@ -221,6 +241,20 @@ class PositionTable
         Time lastSinrUpdate = Seconds(0);  // Time of last valid SINR update
         std::vector<NeighborSummary> twoHopNeighbors; // 2-hop neighbors via this 1-hop
     };
+
+    /// Typedef for table iterator
+    typedef std::map<Ipv4Address, NeighborEntry>::iterator TableIterator;
+    typedef std::map<Ipv4Address, NeighborEntry>::const_iterator TableConstIterator;
+    
+    /**
+     * \brief Get iterator to beginning of neighbor table
+     */
+    TableIterator GetTableBegin() { return m_table.begin(); }
+    
+    /**
+     * \brief Get iterator to end of neighbor table
+     */
+    TableIterator GetTableEnd() { return m_table.end(); }
 
   private:
     Time m_entryLifeTime;

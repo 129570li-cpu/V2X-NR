@@ -322,9 +322,9 @@ PositionHeader::GetInstanceTypeId() const
 uint32_t
 PositionHeader::GetSerializedSize() const
 {
-    // 8 * sizeof(double) + sizeof(uint32_t) + sizeof(uint8_t) + 2*sizeof(uint32_t)
-    // = 8*8 + 4 + 1 + 8 = 77 bytes
-    return 77;
+    // Base: 8*8 (doubles) + 4 (updated) + 1 (inRec) + 8 (e0From+e0To) + 8 (lfEdgeFrom+To) = 85 bytes
+    // + 1 (nhops) + nhops * 28 (each hop: 4 ip + 8 x + 8 y + 8 z)
+    return 86 + m_nhops * 28;
 }
 
 void
@@ -342,6 +342,17 @@ PositionHeader::Serialize(Buffer::Iterator i) const
     i.WriteHtonU64(DoubleToUint64(m_lfPosy));
     i.WriteHtonU32(m_e0From);
     i.WriteHtonU32(m_e0To);
+    i.WriteHtonU32(m_lfEdgeFrom);
+    i.WriteHtonU32(m_lfEdgeTo);
+    // Hop history
+    i.WriteU8(m_nhops);
+    for (uint8_t h = 0; h < m_nhops; h++)
+    {
+        i.WriteHtonU32(m_hops[h].ip);
+        i.WriteHtonU64(DoubleToUint64(m_hops[h].x));
+        i.WriteHtonU64(DoubleToUint64(m_hops[h].y));
+        i.WriteHtonU64(DoubleToUint64(m_hops[h].z));
+    }
 }
 
 uint32_t
@@ -360,8 +371,32 @@ PositionHeader::Deserialize(Buffer::Iterator start)
     m_lfPosy = Uint64ToDouble(i.ReadNtohU64());
     m_e0From = i.ReadNtohU32();
     m_e0To = i.ReadNtohU32();
+    m_lfEdgeFrom = i.ReadNtohU32();
+    m_lfEdgeTo = i.ReadNtohU32();
+    // Hop history
+    uint8_t packetNhops = i.ReadU8();  // Actual count in packet (preserve for skipping)
+    
+    // Clamp to storage limit, but preserve original for correct byte skipping
+    m_nhops = std::min(packetNhops, MAX_PERI_HOPS);
+    
+    // Read hops we can store
+    for (uint8_t h = 0; h < m_nhops; h++)
+    {
+        m_hops[h].ip = i.ReadNtohU32();
+        m_hops[h].x = Uint64ToDouble(i.ReadNtohU64());
+        m_hops[h].y = Uint64ToDouble(i.ReadNtohU64());
+        m_hops[h].z = Uint64ToDouble(i.ReadNtohU64());
+    }
+    // Skip excess hops we can't store (28 bytes each) - use original packetNhops
+    for (uint8_t h = m_nhops; h < packetNhops; h++)
+    {
+        i.ReadNtohU32();   // ip
+        i.ReadNtohU64();   // x
+        i.ReadNtohU64();   // y
+        i.ReadNtohU64();   // z
+    }
     uint32_t dist = i.GetDistanceFrom(start);
-    NS_ASSERT(dist == GetSerializedSize());
+    // Note: dist will match serialized size with packetNhops, not m_nhops
     return dist;
 }
 
@@ -374,17 +409,40 @@ PositionHeader::Print(std::ostream& os) const
        << "InRec: " << (int)m_inRec << " "
        << "LastPos: (" << m_lastPosx << "," << m_lastPosy << ") "
        << "LfPos: (" << m_lfPosx << "," << m_lfPosy << ") "
-       << "e0: (" << m_e0From << "->" << m_e0To << ")";
+       << "e0: (" << m_e0From << "->" << m_e0To << ") "
+       << "lfEdge: (" << m_lfEdgeFrom << "->" << m_lfEdgeTo << ") "
+       << "Hops[" << (int)m_nhops << "]: ";
+    for (uint8_t h = 0; h < m_nhops; h++)
+    {
+        os << m_hops[h].ip << "@(" << m_hops[h].x << "," << m_hops[h].y << "," << m_hops[h].z << ")";
+        if (h < m_nhops - 1) os << "->";
+    }
 }
 
 bool
 PositionHeader::operator==(const PositionHeader& o) const
 {
-    return (m_dstPosx == o.m_dstPosx && m_dstPosy == o.m_dstPosy && m_updated == o.m_updated &&
-            m_recPosx == o.m_recPosx && m_recPosy == o.m_recPosy && m_inRec == o.m_inRec &&
-            m_lastPosx == o.m_lastPosx && m_lastPosy == o.m_lastPosy &&
-            m_lfPosx == o.m_lfPosx && m_lfPosy == o.m_lfPosy &&
-            m_e0From == o.m_e0From && m_e0To == o.m_e0To);
+    if (m_dstPosx != o.m_dstPosx || m_dstPosy != o.m_dstPosy || m_updated != o.m_updated ||
+        m_recPosx != o.m_recPosx || m_recPosy != o.m_recPosy || m_inRec != o.m_inRec ||
+        m_lastPosx != o.m_lastPosx || m_lastPosy != o.m_lastPosy ||
+        m_lfPosx != o.m_lfPosx || m_lfPosy != o.m_lfPosy ||
+        m_e0From != o.m_e0From || m_e0To != o.m_e0To ||
+        m_lfEdgeFrom != o.m_lfEdgeFrom || m_lfEdgeTo != o.m_lfEdgeTo ||
+        m_nhops != o.m_nhops)
+    {
+        return false;
+    }
+    for (uint8_t h = 0; h < m_nhops; h++)
+    {
+        if (m_hops[h].ip != o.m_hops[h].ip ||
+            m_hops[h].x != o.m_hops[h].x ||
+            m_hops[h].y != o.m_hops[h].y ||
+            m_hops[h].z != o.m_hops[h].z)
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 std::ostream&

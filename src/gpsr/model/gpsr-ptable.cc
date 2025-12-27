@@ -462,9 +462,9 @@ bool IsGabrielGraphEdge(
 
 // ============ BestAngle (GG-Aware Multi-Pass) ============
 Ipv4Address
-PositionTable::BestAngle(Vector previousHop, Vector nodePos)
+PositionTable::BestAngle(Vector previousHop, Vector nodePos, Ipv4Address excludeIp)
 {
-    NS_LOG_FUNCTION(this << previousHop << nodePos);
+    NS_LOG_FUNCTION(this << previousHop << nodePos << excludeIp);
 
     Purge();
 
@@ -475,7 +475,6 @@ PositionTable::BestAngle(Vector previousHop, Vector nodePos)
     }
 
     // === Paper-Compliant Right-Hand Rule on Gabriel Graph ===
-    // No prev-hop heuristic exclusion (paper does not have this)
     // Only consider GG-planarized neighbors
     
     Ipv4Address bestFoundID = Ipv4Address::GetZero();
@@ -483,12 +482,22 @@ PositionTable::BestAngle(Vector previousHop, Vector nodePos)
 
     for (const auto& entry : m_table)
     {
-        // Skip neighbors at previousHop position (epsilon compare to avoid float errors)
-        double dx = entry.second.position.x - previousHop.x;
-        double dy = entry.second.position.y - previousHop.y;
-        if (dx * dx + dy * dy < 0.01)  // Within 0.1m of previous hop
+        // Skip by IP if excludeIp is provided (NS-2 style)
+        if (excludeIp != Ipv4Address::GetZero() && entry.first == excludeIp)
         {
             continue;
+        }
+        
+        // Fallback: Skip neighbors at previousHop position (epsilon compare)
+        // Only used when excludeIp is not provided
+        if (excludeIp == Ipv4Address::GetZero())
+        {
+            double dx = entry.second.position.x - previousHop.x;
+            double dy = entry.second.position.y - previousHop.y;
+            if (dx * dx + dy * dy < 0.01)  // Within 0.1m of previous hop
+            {
+                continue;
+            }
         }
 
         // GG Check: Skip if not a Gabriel Graph edge
@@ -516,6 +525,109 @@ PositionTable::BestAngle(Vector previousHop, Vector nodePos)
     }
 
     return bestFoundID;
+}
+
+// ============ FindFace (NS-2 ent_findface equivalent) ============
+Ipv4Address
+PositionTable::FindFace(Vector dstPos, Vector nodePos)
+{
+    NS_LOG_FUNCTION(this << dstPos << nodePos);
+
+    Purge();
+
+    if (m_table.empty())
+    {
+        return Ipv4Address::GetZero();
+    }
+
+    // Calculate bearing to destination
+    double dstBrg = std::atan2(dstPos.y - nodePos.y, dstPos.x - nodePos.x);
+    if (dstBrg < 0) dstBrg += 2 * M_PI;
+
+    Ipv4Address bestFoundID = Ipv4Address::GetZero();
+    double minAngle = 2 * M_PI + 1;  // Find minimum CCW angle from dstBrg
+
+    for (const auto& entry : m_table)
+    {
+        // GG Check: Skip if not a Gabriel Graph edge
+        if (!IsGabrielGraphEdge(m_table, nodePos, entry.second.position, entry.first))
+        {
+            continue;
+        }
+
+        // Calculate bearing to this neighbor
+        double brg = std::atan2(entry.second.position.y - nodePos.y, 
+                                 entry.second.position.x - nodePos.x);
+        if (brg < 0) brg += 2 * M_PI;
+
+        // CCW angle from dstBrg (NS-2 style: sweep CCW from dstBrg to find first edge)
+        double angle = brg - dstBrg;
+        if (angle < 0) angle += 2 * M_PI;
+
+        // Find neighbor with smallest CCW angle (closest to dstBrg in CCW direction)
+        if (angle < minAngle)
+        {
+            minAngle = angle;
+            bestFoundID = entry.first;
+        }
+    }
+
+    NS_LOG_DEBUG("FindFace: dstBrg=" << dstBrg << " minAngle=" << minAngle << " neighbor=" << bestFoundID);
+    return bestFoundID;
+}
+
+// ============ NextCCW (NS-2 ent_next_ccw equivalent) ============
+Ipv4Address
+PositionTable::NextCCW(Ipv4Address inNeighbor, Vector nodePos)
+{
+    NS_LOG_FUNCTION(this << inNeighbor << nodePos);
+
+    Purge();
+
+    if (m_table.empty() || m_table.find(inNeighbor) == m_table.end())
+    {
+        return Ipv4Address::GetZero();
+    }
+
+    Vector inPos = m_table[inNeighbor].position;
+    double baseBrg = std::atan2(inPos.y - nodePos.y, inPos.x - nodePos.x);
+    if (baseBrg < 0) baseBrg += 2 * M_PI;
+
+    Ipv4Address nextID = Ipv4Address::GetZero();
+    double minAngle = 2 * M_PI + 1;  // Smallest angle > 0 from base
+
+    for (const auto& entry : m_table)
+    {
+        if (entry.first == inNeighbor)
+            continue;
+
+        // GG Check
+        if (!IsGabrielGraphEdge(m_table, nodePos, entry.second.position, entry.first))
+            continue;
+
+        double brg = std::atan2(entry.second.position.y - nodePos.y,
+                                 entry.second.position.x - nodePos.x);
+        if (brg < 0) brg += 2 * M_PI;
+
+        // Angle CCW from base bearing
+        double angle = brg - baseBrg;
+        if (angle < 0) angle += 2 * M_PI;
+
+        if (angle > 1e-9 && angle < minAngle)
+        {
+            minAngle = angle;
+            nextID = entry.first;
+        }
+    }
+
+    // If no CCW neighbor found, might wrap to inNeighbor (shouldn't happen in valid graph)
+    if (nextID == Ipv4Address::GetZero())
+    {
+        nextID = inNeighbor;
+    }
+
+    NS_LOG_DEBUG("NextCCW: from=" << inNeighbor << " next=" << nextID << " angle=" << minAngle);
+    return nextID;
 }
 
 void
