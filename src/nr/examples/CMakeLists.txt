@@ -58,6 +58,15 @@ foreach(
   )
 endforeach()
 
+# 802.11p WiFi example (separate build with wifi dependencies)
+build_lib_example(
+  NAME sl-80211p-gpsr-example
+  SOURCE_FILES sl-examples/sl-80211p-gpsr-example.cc
+  LIBRARIES_TO_LINK ${libgpsr}
+                    ${libtraci}
+                    ${libwifi}
+)
+
 set(nr-v2x-examples_examples
     cttc-nr-v2x-demo-simple
     nr-v2x-west-to-east-highway

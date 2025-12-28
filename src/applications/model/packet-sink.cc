@@ -256,6 +256,13 @@ PacketSink::PacketReceived(const Ptr<Packet>& p, const Address& from, const Addr
 {
     SeqTsSizeHeader header;
     Ptr<Packet> buffer;
+    
+    // Diagnostic: check packet size before processing
+    NS_LOG_INFO("PacketReceived from=" << from << " pktSize=" << p->GetSize());
+    if (p->GetSize() < header.GetSerializedSize()) {
+        NS_LOG_WARN("Packet too small for SeqTsSizeHeader! pktSize=" << p->GetSize() 
+                    << " headerSize=" << header.GetSerializedSize());
+    }
 
     auto itBuffer = m_buffer.find(from);
     if (itBuffer == m_buffer.end())

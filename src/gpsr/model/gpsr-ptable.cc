@@ -335,9 +335,25 @@ PositionTable::BestNeighborTwoHop(Vector dstPosition, Vector nodePos, Vector nod
     double bestScore = -1.0;
     double bestDistance = std::numeric_limits<double>::max();
 
+    // SINR threshold and aging parameters (same as BestNeighbor)
+    const double SINR_THRESHOLD = 3.0;  // Linear ~5dB (less strict)
+    const Time AGING_TIMEOUT = Seconds(5.0);
+    
     // Score all neighbors that make forward progress
     for (const auto& entry : m_table)
     {
+        // Use smoothed SINR if available (same as scoring logic)
+        double sinrValue = (entry.second.smoothedSinr > 0) 
+                           ? entry.second.smoothedSinr 
+                           : entry.second.sinr;
+        
+        // Quality filter: valid SINR, above threshold, not aged
+        if (sinrValue < SINR_THRESHOLD ||
+            (Simulator::Now() - entry.second.lastSinrUpdate) > AGING_TIMEOUT)
+        {
+            continue;  // Skip neighbors with poor/stale link quality
+        }
+        
         double distance = CalculateDistance(entry.second.position, dstPosition);
         
         // Only consider neighbors that make progress toward destination
@@ -372,9 +388,9 @@ PositionTable::BestNeighborTwoHop(Vector dstPosition, Vector nodePos, Vector nod
         return bestNeighbor;
     }
 
-    // Fallback: No neighbor passed the scoring, try standard greedy as last resort
-    NS_LOG_DEBUG("BestNeighborTwoHop: no scored neighbor, falling back to greedy");
-    return BestNeighbor(dstPosition, nodePos);
+    // No neighbor passed scoring - trigger perimeter mode
+    NS_LOG_DEBUG("BestNeighborTwoHop: no scored neighbor, entering perimeter mode");
+    return Ipv4Address::GetZero();
 }
 
 double
@@ -812,7 +828,7 @@ PositionTable::CalculateTwoHopScore(Ipv4Address neighborId,
     // ========== One-Hop Path Evaluation ==========
     double neighborToDst = CalculateDistance(neighbor.position, dstPos);
     double progress1Hop = selfToDst - neighborToDst;
-    double progress1HopNorm = std::max(0.0, progress1Hop / COMM_RANGE);
+    double progress1HopNorm = std::min(1.0, std::max(0.0, progress1Hop / COMM_RANGE));
     
     // Link Quality for 1-hop
     double sinr1Hop = (neighbor.smoothedSinr > 0) ? neighbor.smoothedSinr : neighbor.sinr;
@@ -846,7 +862,7 @@ PositionTable::CalculateTwoHopScore(Ipv4Address neighborId,
         
         // Progress via 2-hop: how much closer does the 2-hop neighbor get to dst
         double progress2Hop = selfToDst - twoHopToDst;
-        double progress2HopNorm = std::max(0.0, progress2Hop / COMM_RANGE);
+        double progress2HopNorm = std::min(1.0, std::max(0.0, progress2Hop / COMM_RANGE));
         
         // Quality: bottleneck of the two links
         // First link: self -> neighbor (quality1HopNorm)
