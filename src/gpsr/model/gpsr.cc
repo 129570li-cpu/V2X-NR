@@ -976,6 +976,7 @@ RoutingProtocol::RouteInput(Ptr<const Packet> p,
                             const ErrorCallback& ecb)
 {
     NS_LOG_FUNCTION(this << p->GetUid() << header.GetDestination() << idev->GetAddress());
+    NS_LOG_DEBUG("RouteInput-RX: UID=" << p->GetUid() << " rawSize=" << p->GetSize() << " dst=" << header.GetDestination());
 
     if (m_socketAddresses.empty())
     {
@@ -1053,10 +1054,11 @@ RoutingProtocol::RouteInput(Ptr<const Packet> p,
             NS_LOG_DEBUG("LocalDelivery Check: Size=" << preSize 
                          << " UID=" << packet->GetUid()
                          << " PeekTypeHeader=" << peekedBytes
+                         << " Type=" << (int)tHeader.Get()
                          << " TypeValid=" << tHeader.IsValid()
                          << " Tag=" << (int)gpsrTag.GetType());
             
-            if (peekedBytes > 0 && tHeader.IsValid())
+            if (peekedBytes > 0 && tHeader.IsValid() && tHeader.Get() == GPSRTYPE_POS)
             {
                 packet->RemoveHeader(tHeader);
                 PositionHeader phdr;
@@ -1067,8 +1069,8 @@ RoutingProtocol::RouteInput(Ptr<const Packet> p,
             }
             else
             {
-                // Stale tag or corrupted header - just clear tag, don't strip
-                NS_LOG_DEBUG("LocalDelivery: TypeHeader invalid/stale - clearing tag only");
+                // Tag/Type mismatch or corrupted header - just clear tag, don't strip
+                NS_LOG_DEBUG("LocalDelivery: Tag/Type mismatch, clearing tag only");
                 packet->RemovePacketTag(gpsrTag);
                 packet->AddPacketTag(localDeliveredTag);  // Mark as processed
             }
@@ -1184,6 +1186,12 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
     if (tHeader.Get() == GPSRTYPE_POS)
     {
         p->RemoveHeader(hdr);
+        NS_LOG_DEBUG("Forwarding-HDR: UID=" << p->GetUid() 
+                     << " Size=" << p->GetSize()
+                     << " InRec=" << (int)hdr.GetInRec()
+                     << " Nhops=" << (int)hdr.GetNhops()
+                     << " E0From=" << hdr.GetE0From()
+                     << " E0To=" << hdr.GetE0To());
         Position.x = hdr.GetDstPosx();
         Position.y = hdr.GetDstPosy();
         updated = hdr.GetUpdated();
@@ -1249,6 +1257,18 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
         // Sync tag with header
         GpsrHeaderTag tag(GPSRTYPE_POS);
         if (!p->PeekPacketTag(tag)) { p->AddPacketTag(tag); }
+        
+        // DEBUG: Verify header was written correctly
+        {
+            TypeHeader tmpT;
+            p->PeekHeader(tmpT);
+            PositionHeader tmpP;
+            Ptr<Packet> copy = p->Copy();
+            copy->RemoveHeader(tmpT);
+            copy->PeekHeader(tmpP);
+            NS_LOG_DEBUG("Forwarding TX-CHECK: pktSize=" << p->GetSize() 
+                         << " nhops=" << (int)tmpP.GetNhops());
+        }
 
         Ptr<Ipv4Route> route = Create<Ipv4Route>();
         route->SetDestination(dst);
@@ -1282,7 +1302,9 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
             NS_LOG_DEBUG("Added GpsrNextHopTag: nextHop=" << nextHop << " ttl=63");
         }
         
-        ucb(route, p, header);
+        Ipv4Header newHeader = header;
+        newHeader.SetPayloadSize(p->GetSize());
+        ucb(route, p, newHeader);
         return true;
     }
 
@@ -1349,6 +1371,12 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
 
     PositionHeader hdr;
     p->RemoveHeader(hdr);
+    NS_LOG_DEBUG("RecoveryMode-HDR: UID=" << p->GetUid() 
+                 << " Size=" << p->GetSize()
+                 << " InRec=" << (int)hdr.GetInRec()
+                 << " Nhops=" << (int)hdr.GetNhops()
+                 << " E0From=" << hdr.GetE0From()
+                 << " E0To=" << hdr.GetE0To());
     
     // Extract header fields
     Vector dstPos(hdr.GetDstPosx(), hdr.GetDstPosy(), 0);
@@ -1461,6 +1489,7 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
     {
         NS_LOG_DEBUG("RecoveryMode: Hop history full (MAX_PERI_HOPS reached). Loop detection may be weakened.");
     }
+    hdr.SetHasHopList(1);  // 方案A: 标记真正添加了 hop
 
     // === Perimeter Entry Initialization ===
     // Only enter if truly starting perimeter (not from greedy return)
@@ -1512,6 +1541,7 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
             // Clear hop history
             hdr.ClearHops();
             hdr.AddHop(myIp.Get(), myPos.x, myPos.y);
+            hdr.SetHasHopList(1);  // 方案A: 标记真正添加了 hop
             
             // Re-select face via FindFace (NS-2 ent_findface)
             nextHop = m_neighbors.FindFace(dstPos, myPos);
@@ -1630,6 +1660,8 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
                              lfPos.x, lfPos.y,
                              e0From, e0To);
     posHeader.SetLfEdge(lfEdgeFrom, lfEdgeTo);
+    // 方案A: 继承 hasHopList 标志
+    posHeader.SetHasHopList(hdr.GetHasHopList());
     // Copy hop history from old header (with z coordinate)
     for (uint8_t h = 0; h < hdr.GetNhops(); h++)
     {
@@ -1640,6 +1672,14 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
     p->AddHeader(tHeader);
     GpsrHeaderTag newTag(GPSRTYPE_POS);
     if (!p->PeekPacketTag(newTag)) { p->AddPacketTag(newTag); }
+    
+    // 诊断日志：发送时的包大小和 header 详情
+    NS_LOG_DEBUG("RecoveryMode-TX: UID=" << p->GetUid()
+                 << " pktSize=" << p->GetSize()
+                 << " hasHopList=" << (int)posHeader.GetHasHopList()
+                 << " nhops=" << (int)posHeader.GetNhops()
+                 << " inRec=" << (int)inRec
+                 << " hdrSize=" << posHeader.GetSerializedSize());
 
     // === Forward Packet ===
     Ptr<Ipv4Route> route = Create<Ipv4Route>();
@@ -1670,7 +1710,9 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
         p->AddPacketTag(nhTag);
     }
     
-    ucb(route, p, header);
+    Ipv4Header newHeader = header;
+    newHeader.SetPayloadSize(p->GetSize());
+    ucb(route, p, newHeader);
 }
 
 void
@@ -2037,6 +2079,18 @@ RoutingProtocol::AddHeaders(Ptr<Packet> p,
                  << " nextHop=" << nextHop 
                  << " tagAdded=" << hasNhTag 
                  << " verifyNextHop=" << (hasNhTag ? verifyTag.GetNextHop() : Ipv4Address::GetZero()));
+    
+    // DEBUG: Verify header was written correctly
+    {
+        TypeHeader tmpT;
+        p->PeekHeader(tmpT);
+        PositionHeader tmpP;
+        Ptr<Packet> copy = p->Copy();
+        copy->RemoveHeader(tmpT);
+        copy->PeekHeader(tmpP);
+        NS_LOG_DEBUG("AddHeaders TX-CHECK: pktSize=" << p->GetSize() 
+                     << " nhops=" << (int)tmpP.GetNhops());
+    }
 
     // Send the packet with headers via the IP layer's down target
     // m_downTarget must be configured by calling GpsrHelper::Install() after InternetStackHelper

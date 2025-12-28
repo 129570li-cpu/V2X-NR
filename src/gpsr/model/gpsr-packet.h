@@ -392,7 +392,11 @@ class PositionHeader : public Header
 
     uint8_t GetNhops() const { return m_nhops; }
     
-    void ClearHops() { m_nhops = 0; }
+    void ClearHops() { m_nhops = 0; m_hasHopList = 0; }
+    
+    // hasHopList flag (方案A: 防止 payload 误解析为 hop list)
+    void SetHasHopList(uint8_t flag) { m_hasHopList = flag; }
+    uint8_t GetHasHopList() const { return m_hasHopList; }
     
     /**
      * \brief Check if directed edge (ip1 -> ip2) exists in hop history
@@ -433,6 +437,7 @@ class PositionHeader : public Header
     // Hop history (NS-2 style)
     PeriHop m_hops[MAX_PERI_HOPS];
     uint8_t m_nhops = 0;
+    uint8_t m_hasHopList = 0;  // 方案A: 只有真正添加 hop 时才置1
 };
 
 std::ostream& operator<<(std::ostream& os, const PositionHeader& h);

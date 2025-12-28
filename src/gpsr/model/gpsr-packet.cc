@@ -323,8 +323,8 @@ uint32_t
 PositionHeader::GetSerializedSize() const
 {
     // Base: 8*8 (doubles) + 4 (updated) + 1 (inRec) + 8 (e0From+e0To) + 8 (lfEdgeFrom+To) = 85 bytes
-    // + 1 (nhops) + nhops * 28 (each hop: 4 ip + 8 x + 8 y + 8 z)
-    return 86 + m_nhops * 28;
+    // + 1 (hasHopList) + 1 (nhops) + nhops * 28 (each hop: 4 ip + 8 x + 8 y + 8 z)
+    return 87 + m_nhops * 28;
 }
 
 void
@@ -344,6 +344,8 @@ PositionHeader::Serialize(Buffer::Iterator i) const
     i.WriteHtonU32(m_e0To);
     i.WriteHtonU32(m_lfEdgeFrom);
     i.WriteHtonU32(m_lfEdgeTo);
+    // hasHopList flag (方案A)
+    i.WriteU8(m_hasHopList);
     // Hop history
     i.WriteU8(m_nhops);
     for (uint8_t h = 0; h < m_nhops; h++)
@@ -373,10 +375,33 @@ PositionHeader::Deserialize(Buffer::Iterator start)
     m_e0To = i.ReadNtohU32();
     m_lfEdgeFrom = i.ReadNtohU32();
     m_lfEdgeTo = i.ReadNtohU32();
+    // hasHopList flag (方案A)
+    m_hasHopList = i.ReadU8();
     // Hop history
-    uint8_t packetNhops = i.ReadU8();  // Actual count in packet (preserve for skipping)
+    uint8_t packetNhops = i.ReadU8();  // Actual count in packet
+    uint8_t originalNhops = packetNhops;
     
-    // Clamp to storage limit, but preserve original for correct byte skipping
+    // Safety check: verify buffer has enough remaining data for stated hops
+    const uint32_t hopSize = 28;  // 4 + 8 + 8 + 8
+    uint32_t remainingBytes = i.GetRemainingSize();
+    uint32_t maxFit = remainingBytes / hopSize;
+    
+    if (packetNhops > maxFit)
+    {
+        NS_LOG_WARN("PositionHeader: nhops=" << (int)originalNhops
+                    << " > maxFit=" << maxFit
+                    << " remaining=" << remainingBytes
+                    << ", clamp");
+        packetNhops = static_cast<uint8_t>(maxFit);
+    }
+    
+    // 只有在确实处于周边模式时才允许解析 hop list
+    if (m_hasHopList != 1 || m_inRec == 0 || m_e0From == 0 || m_e0To == 0)
+    {
+        packetNhops = 0;
+    }
+    
+    // Clamp to storage limit
     m_nhops = std::min(packetNhops, MAX_PERI_HOPS);
     
     // Read hops we can store
@@ -387,7 +412,7 @@ PositionHeader::Deserialize(Buffer::Iterator start)
         m_hops[h].y = Uint64ToDouble(i.ReadNtohU64());
         m_hops[h].z = Uint64ToDouble(i.ReadNtohU64());
     }
-    // Skip excess hops we can't store (28 bytes each) - use original packetNhops
+    // Skip excess hops we can't store (28 bytes each) - use clamped packetNhops
     for (uint8_t h = m_nhops; h < packetNhops; h++)
     {
         i.ReadNtohU32();   // ip
@@ -396,11 +421,12 @@ PositionHeader::Deserialize(Buffer::Iterator start)
         i.ReadNtohU64();   // z
     }
     uint32_t dist = i.GetDistanceFrom(start);
-    NS_LOG_DEBUG("PositionHeader::Deserialize: packetNhops=" << (int)packetNhops 
-                 << " m_nhops=" << (int)m_nhops 
-                 << " bytesRead=" << dist 
-                 << " expectedSize=" << GetSerializedSize());
-    // Note: dist will match serialized size with packetNhops, not m_nhops
+    NS_LOG_DEBUG("PositionHeader::Deserialize: hasHopList=" << (int)m_hasHopList
+                 << " origNhops=" << (int)originalNhops
+                 << " pktNhops=" << (int)packetNhops
+                 << " m_nhops=" << (int)m_nhops
+                 << " bytesRead=" << dist
+                 << " remaining=" << remainingBytes);
     return dist;
 }
 
@@ -415,6 +441,7 @@ PositionHeader::Print(std::ostream& os) const
        << "LfPos: (" << m_lfPosx << "," << m_lfPosy << ") "
        << "e0: (" << m_e0From << "->" << m_e0To << ") "
        << "lfEdge: (" << m_lfEdgeFrom << "->" << m_lfEdgeTo << ") "
+       << "hasHopList=" << (int)m_hasHopList << " "
        << "Hops[" << (int)m_nhops << "]: ";
     for (uint8_t h = 0; h < m_nhops; h++)
     {
@@ -432,6 +459,7 @@ PositionHeader::operator==(const PositionHeader& o) const
         m_lfPosx != o.m_lfPosx || m_lfPosy != o.m_lfPosy ||
         m_e0From != o.m_e0From || m_e0To != o.m_e0To ||
         m_lfEdgeFrom != o.m_lfEdgeFrom || m_lfEdgeTo != o.m_lfEdgeTo ||
+        m_hasHopList != o.m_hasHopList ||
         m_nhops != o.m_nhops)
     {
         return false;
