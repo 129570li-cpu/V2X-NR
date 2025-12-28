@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <string>
 
 namespace ns3
 {
@@ -236,7 +237,43 @@ RoutingProtocol::GetTypeId()
                           "Indicates if PerimeterMode (recovery mode) is enabled",
                           BooleanValue(true),
                           MakeBooleanAccessor(&RoutingProtocol::m_perimeterMode),
-                          MakeBooleanChecker());
+                          MakeBooleanChecker())
+            // ========== Adaptive HELLO attributes ==========
+            .AddAttribute("AdaptiveHelloEnabled",
+                          "Enable adaptive HELLO interval (ETSI CAM style)",
+                          BooleanValue(true),
+                          MakeBooleanAccessor(&RoutingProtocol::m_adaptiveHelloEnabled),
+                          MakeBooleanChecker())
+            .AddAttribute("HelloIntervalMin",
+                          "Minimum HELLO interval (adaptive mode)",
+                          TimeValue(MilliSeconds(100)),
+                          MakeTimeAccessor(&RoutingProtocol::m_helloIntervalMin),
+                          MakeTimeChecker())
+            .AddAttribute("HelloIntervalMax",
+                          "Maximum HELLO interval (adaptive mode)",
+                          TimeValue(Seconds(1)),
+                          MakeTimeAccessor(&RoutingProtocol::m_helloIntervalMax),
+                          MakeTimeChecker())
+            .AddAttribute("HeadingThreshold",
+                          "Heading change threshold for HELLO trigger (degrees)",
+                          DoubleValue(4.0),
+                          MakeDoubleAccessor(&RoutingProtocol::m_headingThreshold),
+                          MakeDoubleChecker<double>(0.0, 180.0))
+            .AddAttribute("PositionThreshold",
+                          "Position change threshold for HELLO trigger (meters)",
+                          DoubleValue(4.0),
+                          MakeDoubleAccessor(&RoutingProtocol::m_positionThreshold),
+                          MakeDoubleChecker<double>(0.0, 1000.0))
+            .AddAttribute("SpeedThreshold",
+                          "Speed change threshold for HELLO trigger (m/s)",
+                          DoubleValue(0.5),
+                          MakeDoubleAccessor(&RoutingProtocol::m_speedThreshold),
+                          MakeDoubleChecker<double>(0.0, 100.0))
+            .AddAttribute("HelloCheckInterval",
+                          "Condition check interval for adaptive HELLO",
+                          TimeValue(MilliSeconds(50)),
+                          MakeTimeAccessor(&RoutingProtocol::m_helloCheckInterval),
+                          MakeTimeChecker());
     return tid;
 }
 
@@ -331,13 +368,134 @@ void
 RoutingProtocol::HelloTimerExpire()
 {
     NS_LOG_FUNCTION(this);
-    SendHello();
-
-    Ptr<UniformRandomVariable> jitter = CreateObject<UniformRandomVariable>();
-    jitter->SetAttribute("Min", DoubleValue(-GPSR_MAXJITTER));
-    jitter->SetAttribute("Max", DoubleValue(GPSR_MAXJITTER));
-
-    m_helloIntervalTimer.Schedule(m_helloInterval + Seconds(jitter->GetValue()));
+    
+    // ========== Adaptive HELLO Logic (ETSI EN 302 637-2 style) ==========
+    if (!m_adaptiveHelloEnabled)
+    {
+        // Fixed interval mode (legacy behavior)
+        SendHello();
+        Ptr<UniformRandomVariable> jitter = CreateObject<UniformRandomVariable>();
+        jitter->SetAttribute("Min", DoubleValue(-GPSR_MAXJITTER));
+        jitter->SetAttribute("Max", DoubleValue(GPSR_MAXJITTER));
+        m_helloIntervalTimer.Schedule(m_helloInterval + Seconds(jitter->GetValue()));
+        return;
+    }
+    
+    // ========== FIX 1: min/max consistency check ==========
+    Time effectiveMin = std::min(m_helloIntervalMin, m_helloIntervalMax);
+    Time effectiveMax = std::max(m_helloIntervalMin, m_helloIntervalMax);
+    
+    // Get current mobility state
+    Ptr<MobilityModel> mm = m_ipv4->GetObject<MobilityModel>();
+    if (!mm)
+    {
+        // ========== FIX 4: No MobilityModel - fallback to fixed interval ==========
+        // Without mobility info, adaptive mode is meaningless; use legacy fixed interval
+        NS_LOG_DEBUG("No MobilityModel, falling back to fixed interval HELLO");
+        SendHello();
+        Ptr<UniformRandomVariable> jitter = CreateObject<UniformRandomVariable>();
+        jitter->SetAttribute("Min", DoubleValue(-GPSR_MAXJITTER));
+        jitter->SetAttribute("Max", DoubleValue(GPSR_MAXJITTER));
+        m_helloIntervalTimer.Schedule(m_helloInterval + Seconds(jitter->GetValue()));
+        return;
+    }
+    
+    Vector curPos = mm->GetPosition();
+    Vector curVel = mm->GetVelocity();
+    double curSpeed = std::sqrt(curVel.x * curVel.x + curVel.y * curVel.y);
+    
+    // Calculate heading from velocity (degrees, 0=East, CCW positive)
+    double curHeading = 0.0;
+    if (curSpeed > 0.1)  // Only compute heading if moving
+    {
+        curHeading = std::atan2(curVel.y, curVel.x) * 180.0 / M_PI;
+    }
+    else if (m_prevHeading > -500.0)  // Use previous heading if stationary
+    {
+        curHeading = m_prevHeading;
+    }
+    
+    Time now = Simulator::Now();
+    Time elapsed = now - m_lastHelloTime;
+    bool shouldSend = false;
+    std::string triggerReason = "";
+    
+    // Minimum interval protection (use effective min)
+    if (elapsed < effectiveMin)
+    {
+        // Too soon, schedule next check with jitter
+        Ptr<UniformRandomVariable> checkJitter = CreateObject<UniformRandomVariable>();
+        checkJitter->SetAttribute("Min", DoubleValue(0.75));
+        checkJitter->SetAttribute("Max", DoubleValue(1.25));
+        m_helloIntervalTimer.Schedule(m_helloCheckInterval * checkJitter->GetValue());
+        return;
+    }
+    
+    // Check trigger conditions (only if previous state is valid)
+    if (m_prevHeading > -500.0)  // Valid previous state exists
+    {
+        // Condition 1a: Heading change > threshold
+        double headingDiff = std::abs(curHeading - m_prevHeading);
+        if (headingDiff > 180.0)
+        {
+            headingDiff = 360.0 - headingDiff;
+        }
+        if (headingDiff > m_headingThreshold)
+        {
+            shouldSend = true;
+            triggerReason = "heading";
+        }
+        
+        // Condition 1b: Position change > threshold
+        double posDiff = CalculateDistance(curPos, m_prevPosition);
+        if (posDiff > m_positionThreshold)
+        {
+            shouldSend = true;
+            triggerReason = (triggerReason.empty() ? "position" : triggerReason + "+position");
+        }
+        
+        // Condition 1c: Speed change > threshold
+        if (m_prevSpeed >= 0.0 && std::abs(curSpeed - m_prevSpeed) > m_speedThreshold)
+        {
+            shouldSend = true;
+            triggerReason = (triggerReason.empty() ? "speed" : triggerReason + "+speed");
+        }
+    }
+    else
+    {
+        // First HELLO after initialization
+        shouldSend = true;
+        triggerReason = "init";
+    }
+    
+    // Condition 2: Maximum interval timeout (use effective max)
+    if (elapsed >= effectiveMax)
+    {
+        shouldSend = true;
+        if (triggerReason.empty())
+        {
+            triggerReason = "timeout";
+        }
+    }
+    
+    // Send HELLO if triggered
+    if (shouldSend)
+    {
+        NS_LOG_DEBUG("Adaptive HELLO triggered: " << triggerReason 
+                     << " elapsed=" << elapsed.GetMilliSeconds() << "ms"
+                     << " heading=" << curHeading << " (prev=" << m_prevHeading << ")"
+                     << " speed=" << curSpeed << " (prev=" << m_prevSpeed << ")");
+        
+        // ========== FIX 3: State update moved to SendHello() ==========
+        // SendHello() will update m_lastHelloTime/m_prev* at actual send time
+        SendHello();
+    }
+    
+    // Schedule next check with jitter (±25%)
+    Ptr<UniformRandomVariable> checkJitter = CreateObject<UniformRandomVariable>();
+    checkJitter->SetAttribute("Min", DoubleValue(0.75));
+    checkJitter->SetAttribute("Max", DoubleValue(1.25));
+    m_helloIntervalTimer.Schedule(m_helloCheckInterval * checkJitter->GetValue());
 }
 
 void
@@ -397,6 +555,24 @@ RoutingProtocol::SendHello()
         NS_LOG_DEBUG("Sent HELLO from " << iface.GetLocal() << " to " << destination
                      << " with " << neighborList.size() << " neighbors");
     }
+    
+    // ========== FIX 3: Update state at actual send time ==========
+    // This ensures m_prev* reflects the state when HELLO was actually sent
+    double speed = std::sqrt(vel.x * vel.x + vel.y * vel.y);
+    double heading = 0.0;
+    if (speed > 0.1)
+    {
+        heading = std::atan2(vel.y, vel.x) * 180.0 / M_PI;
+    }
+    else if (m_prevHeading > -500.0)
+    {
+        heading = m_prevHeading;  // Keep previous heading if stationary
+    }
+    
+    m_lastHelloTime = Simulator::Now();
+    m_prevPosition = pos;
+    m_prevSpeed = speed;
+    m_prevHeading = heading;
 }
 
 void

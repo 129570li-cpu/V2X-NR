@@ -188,6 +188,27 @@ class RoutingProtocol : public Ipv4RoutingProtocol
     Ptr<NetDevice> m_lo;
 
     Time m_helloInterval;
+    
+    // ========== Adaptive HELLO parameters (ETSI EN 302 637-2 style) ==========
+    Time m_helloIntervalMin{MilliSeconds(100)};   ///< Minimum HELLO interval (10 Hz max)
+    Time m_helloIntervalMax{Seconds(1)};          ///< Maximum HELLO interval (1 Hz min)
+    Time m_helloCheckInterval{MilliSeconds(50)};  ///< Condition check interval
+    
+    // Trigger thresholds (ETSI CAM standard values)
+    double m_headingThreshold{4.0};    ///< Heading change threshold (degrees)
+    double m_positionThreshold{4.0};   ///< Position change threshold (meters)
+    double m_speedThreshold{0.5};      ///< Speed change threshold (m/s)
+    
+    // Previous state for adaptive triggering
+    double m_prevHeading{-1000.0};     ///< Previous heading (degrees), -1000 = uninitialized
+    Vector m_prevPosition{0, 0, 0};    ///< Previous position
+    double m_prevSpeed{-1.0};          ///< Previous speed (m/s), -1 = uninitialized
+    Time m_lastHelloTime{Seconds(0)};  ///< Time of last HELLO sent
+    
+    // Adaptive mode control
+    bool m_adaptiveHelloEnabled{true}; ///< Enable adaptive HELLO (true) or fixed interval (false)
+    // ========== End Adaptive HELLO parameters ==========
+    
     uint32_t m_maxQueueLen;
     Time m_maxQueueTime;
     RequestQueue m_queue;

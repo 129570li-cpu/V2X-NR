@@ -327,7 +327,7 @@ void GenerateDistantTraffic()
         OnOffHelper onoff("ns3::UdpSocketFactory", 
                           InetSocketAddress(dstIp, port));
         onoff.SetAttribute("EnableSeqTsSizeHeader", BooleanValue(true));
-        onoff.SetConstantRate(DataRate("200kb/s"), 512);
+        onoff.SetConstantRate(DataRate("200kb/s"), 400);  // FIX: avoid NR layer truncation
         
         ApplicationContainer app = onoff.Install(g_ueNodeContainerPtr->Get(srcNodeId));
         app.Start(Seconds(0.0));
@@ -362,6 +362,14 @@ void GenerateDistantTraffic()
 void
 NotifySlPsschRx(Ptr<ns3::gpsr::RoutingProtocol> gpsr, SlRxDataPacketTraceParams params)
 {
+    // Detailed PHY Rx trace for debugging packet loss
+    NS_LOG_DEBUG("PHY-RX: srcL2Id=" << params.m_srcL2Id 
+                 << " dstL2Id=" << params.m_dstL2Id
+                 << " tbCorrupt=" << params.m_corrupt
+                 << " sci2Corrupt=" << params.m_sci2Corrupted
+                 << " sinr=" << 10 * log10(params.m_sinr) << "dB"
+                 << " rnti=" << params.m_rnti);
+    
     // Filter out corrupted packets - unreliable SINR data
     if (params.m_corrupt || params.m_sci2Corrupted)
     {
@@ -377,6 +385,33 @@ NotifySlPsschRx(Ptr<ns3::gpsr::RoutingProtocol> gpsr, SlRxDataPacketTraceParams 
     
     // Update SINR in GPSR position table (only if neighbor exists)
     gpsr->GetPositionTable()->UpdateSinr(neighborIp, params.m_sinr);
+}
+
+/**
+ * \brief Trace callback for PSSCH transmission - logs srcL2Id/dstL2Id
+ */
+void
+NotifySlPsschTx(SlPsschUeMacStatParameters params)
+{
+    NS_LOG_DEBUG("TX-PSSCH: srcL2Id=" << params.srcL2Id 
+                 << " dstL2Id=" << params.dstL2Id
+                 << " imsi=" << params.imsi
+                 << " rnti=" << params.rnti
+                 << " time=" << params.timeMs << "ms"
+                 << " mcs=" << (uint32_t)params.harqId);
+}
+
+/**
+ * \brief Trace callback for PSCCH/SCI1 reception - logs dstL2Id
+ */
+void
+NotifySlPscchRx(SlRxCtrlPacketTraceParams params)
+{
+    NS_LOG_DEBUG("RX-PSCCH: dstL2Id=" << params.m_dstL2Id
+                 << " txRnti=" << params.m_txRnti
+                 << " corrupt=" << params.m_corrupt
+                 << " time=" << params.m_timeMs << "ms"
+                 << " sinr=" << 10 * log10(params.m_sinr) << "dB");
 }
 
 int
@@ -410,7 +445,7 @@ main(int argc, char* argv[])
     // NR parameters
     uint16_t numerologyBwpSl = 0; // SCS=15kHz (1ms slots) for reduced CPU load
     double centralFrequencyBandSl = 5.89e9; // band n47  TDD //Here band is analogous to channel
-    uint16_t bandwidthBandSl = 100;         // Multiple of 100 KHz; 100 = 10 MHz (typical V2X bandwidth)
+    uint16_t bandwidthBandSl = 200;         // Multiple of 100 KHz; 200 = 20 MHz
     double txPower = 23;                    // dBm
 
     CommandLine cmd(__FILE__);
@@ -525,9 +560,9 @@ main(int argc, char* argv[])
     //LogComponentEnable("EpcTftClassifier", LOG_LEVEL_INFO);
     //LogComponentEnable("LteSlTft", LOG_LEVEL_INFO);
     LogComponentEnable("NrSlUeMac", LOG_LEVEL_WARN);            // Reduced from INFO
-    LogComponentEnable("SlNrGpsrExample", LOG_LEVEL_INFO);
+    LogComponentEnable("SlNrGpsrExample", LOG_LEVEL_DEBUG);  // DEBUG for PHY-RX trace
     //LogComponentEnable("EpcUeNas", LOG_LEVEL_INFO);             // Commented out to reduce log
-    //LogComponentEnable("NrSpectrumPhy", LOG_LEVEL_INFO);
+    //LogComponentEnable("NrSpectrumPhy", LOG_LEVEL_INFO);  // PHY layer debug (commented to reduce log)
     LogComponentEnableAll(LOG_PREFIX_TIME);
     LogComponentEnableAll(LOG_PREFIX_NODE);
     LogComponentEnableAll(LOG_PREFIX_FUNC);
@@ -611,7 +646,7 @@ main(int argc, char* argv[])
 
     // SL scheduler
     nrSlHelper->SetNrSlSchedulerTypeId(NrSlUeMacSchedulerFixedMcs::GetTypeId());
-    nrSlHelper->SetUeSlSchedulerAttribute("Mcs", UintegerValue(14));
+    nrSlHelper->SetUeSlSchedulerAttribute("Mcs", UintegerValue(10));  // Increased from 6 to 10
     nrSlHelper->SetUeSlSchedulerAttribute("PriorityToSps", BooleanValue(prioToSps));
 
     nrSlHelper->PrepareUeForSidelink(ueNetDev, bwpIdContainer);
@@ -619,12 +654,12 @@ main(int argc, char* argv[])
     // SlResourcePoolNr IE
     LteRrcSap::SlResourcePoolNr slResourcePoolNr;
     Ptr<NrSlCommResourcePoolFactory> ptrFactory = Create<NrSlCommResourcePoolFactory>();
-    std::vector<std::bitset<1>> slBitmap = {1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1};
+    std::vector<std::bitset<1>> slBitmap = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};  // All 1s for max slots
     ptrFactory->SetSlTimeResources(slBitmap);
-    ptrFactory->SetSlSensingWindow(100); // T0 in ms
-    ptrFactory->SetSlSelectionWindow(5);
-    ptrFactory->SetSlFreqResourcePscch(10); // PSCCH RBs
-    ptrFactory->SetSlSubchannelSize(50);
+    ptrFactory->SetSlSensingWindow(100); // T0 in ms (200 is invalid)
+    ptrFactory->SetSlSelectionWindow(20);  // Max valid value (50 is invalid)
+    ptrFactory->SetSlFreqResourcePscch(10); // PSCCH RBs (6 is invalid, must be 10/12/15/20/25)
+    ptrFactory->SetSlSubchannelSize(15);   // 20MHz/15RB ≈ 7 subchannels
     ptrFactory->SetSlMaxNumPerReserve(3);
     ptrFactory->SetSlPsfchPeriod(psfchPeriod);
     ptrFactory->SetSlMinTimeGapPsfch(3);
@@ -804,6 +839,21 @@ main(int argc, char* argv[])
         else
         {
             NS_LOG_WARN("Node " << i << " failed to connect SINR trace");
+        }
+        
+        // Connect RxPscchTraceUe for SCI1 reception debugging
+        spectrumPhy->TraceConnectWithoutContext(
+            "RxPscchTraceUe", 
+            MakeCallback(&NotifySlPscchRx));
+        
+        // Connect SlPsschScheduling for Tx PSSCH debugging (MAC layer)
+        Ptr<NrSlUeMac> ueMac = DynamicCast<NrSlUeMac>(
+            DynamicCast<NrUeNetDevice>(ueNetDev.Get(i))->GetMac(0));
+        if (ueMac)
+        {
+            ueMac->TraceConnectWithoutContext(
+                "SlPsschScheduling",
+                MakeCallback(&NotifySlPsschTx));
         }
     }
     NS_LOG_INFO("SINR trace binding complete for GPSR enhancement");
