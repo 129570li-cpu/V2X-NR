@@ -183,7 +183,7 @@ void GenerateDistantTraffic()
     }
 
     // Create multiple concurrent flows (5 flows per scheduling)
-    uint32_t numFlows = std::min((size_t)1, validPairs.size());  // DEBUG: temp 1 flow
+    uint32_t numFlows = std::min((size_t)5, validPairs.size());  // 5 concurrent flows
     for (uint32_t f = 0; f < numFlows; ++f)
     {
         // Randomly select a pair from remaining valid pairs
