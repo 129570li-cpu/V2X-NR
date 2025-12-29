@@ -665,8 +665,8 @@ main(int argc, char* argv[])
     NS_LOG_INFO("TraCI connected to SUMO, synchronizing vehicle positions");
 
     // Schedule distance-based traffic generation (start after vehicles enter)
-    Simulator::Schedule(Seconds(5.0), &GenerateDistantTraffic);
-    NS_LOG_INFO("Scheduled distance-based traffic generation (minDist=" << g_minDistanceForTraffic << "m)");
+    Simulator::Schedule(Seconds(20.0), &GenerateDistantTraffic);
+    NS_LOG_INFO("Scheduled distance-based traffic generation (minDist=" << g_minDistanceForTraffic << "m, start at 20s)");
 
     Simulator::Stop(finalSimTime);
     Simulator::Run();
