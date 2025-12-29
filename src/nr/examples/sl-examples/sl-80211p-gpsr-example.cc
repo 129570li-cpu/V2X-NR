@@ -45,16 +45,20 @@ NS_LOG_COMPONENT_DEFINE("SlWifiGpsrExample");
 
 uint32_t g_rxPktCounter = 0;            //!< Global variable to count RX packets
 uint32_t g_txPktCounter = 0;            //!< Global variable to count TX packets
+uint32_t g_rxPktDelivered = 0;          //!< Packets matched with TX record (successful delivery)
+uint64_t g_rxPayloadBytes = 0;          //!< Payload bytes of successfully delivered packets
 std::list<double> g_delays;             //!< Global list to store packet delays upon RX
 
 // Global traffic parameters for CLI - VANET traffic pattern
-uint32_t g_udpPacketSize = 400;         //!< Packet size (BSM ~200-400 bytes)
+uint32_t g_udpPacketSize = 412;         //!< Packet size (payload 400 + SeqTsSizeHeader ~12)
 double g_dataRateKbps = 100.0;          //!< Data rate: ~25 packets/sec at 400B
 
 // ========== Distance-based traffic generation ==========
 std::vector<uint32_t> g_activeNodeIds;  //!< Track active node IDs from TraCI
 NodeContainer* g_ueNodeContainerPtr = nullptr;  //!< Pointer to UE node container for traffic gen
 double g_minDistanceForTraffic = 250.0;  //!< Minimum distance (m) for multi-hop traffic
+uint32_t g_flowId = 0;                  //!< Global flow counter for unique port assignment
+uint16_t g_basePort = 10000;            //!< Base port for flow-specific PacketSink
 
 /*
  * Structure to keep track of the transmission time of the packets at the
@@ -89,8 +93,8 @@ TxPacketTraceForDelay(Ptr<const Packet> p,
 {
     g_txPktCounter++;
     std::ostringstream oss;
-    oss << InetSocketAddress::ConvertFrom(dstAddrs).GetPort() << "(" << seqTsSizeHeader.GetSeq()
-        << ")";
+    auto dst = InetSocketAddress::ConvertFrom(dstAddrs);
+    oss << dst.GetPort() << "#" << seqTsSizeHeader.GetSeq();
     std::string mapKey = oss.str();
     PacketWithRxTimestamp mapValue;
     mapValue.p = p;
@@ -118,18 +122,21 @@ RxPacketTraceForDelay(Ptr<const Packet> p,
 
     double delay = 0.0;
     std::ostringstream oss;
-    oss << InetSocketAddress::ConvertFrom(dstAddrs).GetPort() << "(" << seqTsSizeHeader.GetSeq()
-        << ")";
+    auto dst = InetSocketAddress::ConvertFrom(dstAddrs);
+    oss << dst.GetPort() << "#" << seqTsSizeHeader.GetSeq();
     std::string mapKey = oss.str();
 
     auto it = g_rxPacketsForDelayCalc.find(mapKey);
     if (it == g_rxPacketsForDelayCalc.end())
     {
         NS_LOG_WARN("Rx packet not found for delay calculation: " << mapKey);
-        // Don't calculate delay for this packet but still count it
+        // Don't calculate delay for this packet, not counted as successful delivery
     }
     else
     {
+        // Successfully matched with TX record - count as delivered
+        g_rxPktDelivered++;
+        g_rxPayloadBytes += p->GetSize();  // Payload after SeqTsSizeHeader removed
         delay =
             Simulator::Now().GetSeconds() * 1000.0 - it->second.txTimestamp.GetSeconds() * 1000.0;
         g_delays.push_back(delay);
@@ -201,8 +208,25 @@ void GenerateDistantTraffic()
         ipStream << "7.0." << ((ipOffset >> 8) & 0xFF) << "." << (ipOffset & 0xFF);
         Ipv4Address dstIp(ipStream.str().c_str());
         
+        // Assign unique port for this flow
+        uint16_t port = g_basePort + g_flowId++;
+        if (port > 65500) {
+            NS_LOG_WARN("Port range exhausted, stopping traffic generation");
+            return;
+        }
+        
+        // Install PacketSink on destination node for this specific port
+        PacketSinkHelper sinkHelper("ns3::UdpSocketFactory", 
+                                    InetSocketAddress(Ipv4Address::GetAny(), port));
+        sinkHelper.SetAttribute("EnableSeqTsSizeHeader", BooleanValue(true));
+        ApplicationContainer sinkApp = sinkHelper.Install(g_ueNodeContainerPtr->Get(dstNodeId));
+        sinkApp.Start(Seconds(0.0));
+        sinkApp.Stop(Seconds(6.0));  // Slightly longer than OnOff to catch all packets
+        // Connect RX trace for this sink
+        sinkApp.Get(0)->TraceConnectWithoutContext("RxWithSeqTsSize",
+                                                   MakeCallback(&RxPacketTraceForDelay));
+        
         // Create and install OnOffApplication
-        uint16_t port = 9001;  // Must match global PacketSink port
         OnOffHelper onoff("ns3::UdpSocketFactory", 
                           InetSocketAddress(dstIp, port));
         onoff.SetAttribute("EnableSeqTsSizeHeader", BooleanValue(true));
@@ -218,7 +242,7 @@ void GenerateDistantTraffic()
                                                MakeCallback(&TxPacketTraceForDelay));
         
         NS_LOG_INFO("Multi-hop Traffic: Node " << srcNodeId << " -> Node " << dstNodeId 
-                    << " (IP:" << dstIp << ", dist=" << selectedDist << "m, flow " 
+                    << " (IP:" << dstIp << ", port=" << port << ", dist=" << selectedDist << "m, flow " 
                     << (f+1) << "/" << numFlows << ")");
     }
     
@@ -300,7 +324,7 @@ main(int argc, char* argv[])
     bool testing = false;
 
     // 802.11p parameters
-    double txPower = 23;  // dBm
+    double txPower = 17;  // dBm (~400m range with TwoRayGround)
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("trafficTime", "The time traffic will be active in seconds", trafficTime);
@@ -374,14 +398,14 @@ main(int argc, char* argv[])
         NS_LOG_INFO("Debug log file opened: " << logDir << "sl-80211p-gpsr-debug.log");
     }
     
-    // Logging configuration - DEBUG for crash investigation
-    LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_DEBUG);   // DEBUG for LocalDelivery
-    LogComponentEnable("GpsrPacket", LOG_LEVEL_DEBUG);             // DEBUG for Deserialize
-    //LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_DEBUG); // Very verbose
+    // Logging configuration - simplified for production
+    LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_INFO);    // Forwarding-related logs only
+    //LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_DEBUG);   // DEBUG for LocalDelivery
+    //LogComponentEnable("GpsrPacket", LOG_LEVEL_DEBUG);             // DEBUG for Deserialize
     //LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_WARN);     // Only warnings/errors
     //LogComponentEnable("SlWifiGpsrExample", LOG_LEVEL_DEBUG);    // Very verbose
     LogComponentEnable("SlWifiGpsrExample", LOG_LEVEL_INFO);       // Key events only
-    LogComponentEnable("PacketSink", LOG_LEVEL_INFO);              // Diagnostic for crash
+    //LogComponentEnable("PacketSink", LOG_LEVEL_INFO);              // Diagnostic for crash
     LogComponentEnableAll(LOG_PREFIX_TIME);
     LogComponentEnableAll(LOG_PREFIX_NODE);
     //LogComponentEnableAll(LOG_PREFIX_FUNC);  // Disabled to reduce log size
@@ -527,23 +551,11 @@ main(int argc, char* argv[])
     ApplicationContainer allClientApps;
     ApplicationContainer allServerApps;
 
-    // ========== Global PacketSink for distance-based traffic ==========
-    // Install PacketSink on ALL nodes to receive traffic from random distant sources
-    ApplicationContainer globalServerApps;
-    uint16_t globalPort = 9001;  // Port for distance-based traffic (avoid conflict with 8001)
-    PacketSinkHelper globalSink("ns3::UdpSocketFactory", 
-                                InetSocketAddress(Ipv4Address::GetAny(), globalPort));
-    globalSink.SetAttribute("EnableSeqTsSizeHeader", BooleanValue(true));
+    // ========== Global PacketSink removed - using per-flow PacketSink in GenerateDistantTraffic ==========
+    // ApplicationContainer globalServerApps;
+    // uint16_t globalPort = 9001;
+    // ... (removed to avoid unused RX triggers)
     
-    for (uint32_t i = 0; i < ueNum; ++i)
-    {
-        ApplicationContainer nodeServerApp = globalSink.Install(ueNodeContainer.Get(i));
-        nodeServerApp.Start(Seconds(1.0));
-        globalServerApps.Add(nodeServerApp);
-    }
-    NS_LOG_INFO("Installed PacketSink on " << ueNum << " nodes (port " << globalPort << ")");
-    // ========== End global PacketSink ==========
-
     /************************ END Traffic flows configuration ******************/
 
     /******************** Application packet tracing ***************************/
@@ -563,12 +575,7 @@ main(int argc, char* argv[])
         allServerApps.Get(ac)->TraceConnectWithoutContext("RxWithSeqTsSize",
                                                           MakeCallback(&RxPacketTraceForDelay));
     }
-    // Connect RX trace to global PacketSinks for distance-based traffic
-    for (uint32_t ac = 0; ac < globalServerApps.GetN(); ac++)
-    {
-        globalServerApps.Get(ac)->TraceConnectWithoutContext("RxWithSeqTsSize",
-                                                             MakeCallback(&RxPacketTraceForDelay));
-    }
+    // Global PacketSink trace connection removed - per-flow sinks connected in GenerateDistantTraffic
     /******************** END Application packet  tracing **********************/
 
     // NR-specific grant tracing removed for 802.11p
@@ -643,6 +650,53 @@ main(int argc, char* argv[])
             delaySum += *it;
         }
         std::cout << "Average packet delay = " << delaySum / g_delays.size() << " ms" << std::endl;
+    }
+    
+    // Control overhead statistics
+    uint64_t ctrlBytes = 0;
+    uint64_t ctrlPkts = 0;
+    for (uint32_t i = 0; i < ueNodeContainer.GetN(); i++)
+    {
+        Ptr<Ipv4> ipv4 = ueNodeContainer.Get(i)->GetObject<Ipv4>();
+        if (!ipv4) continue;
+        Ptr<Ipv4RoutingProtocol> routing = ipv4->GetRoutingProtocol();
+        Ptr<Ipv4ListRouting> listRouting = DynamicCast<Ipv4ListRouting>(routing);
+        if (listRouting)
+        {
+            for (uint32_t j = 0; j < listRouting->GetNRoutingProtocols(); j++)
+            {
+                int16_t priority;
+                Ptr<Ipv4RoutingProtocol> proto = listRouting->GetRoutingProtocol(j, priority);
+                Ptr<ns3::gpsr::RoutingProtocol> gpsr = DynamicCast<ns3::gpsr::RoutingProtocol>(proto);
+                if (gpsr)
+                {
+                    ctrlBytes += gpsr->GetCtrlHelloTxBytes();
+                    ctrlPkts += gpsr->GetCtrlHelloTxPkts();
+                }
+            }
+        }
+        else
+        {
+            // Non-ListRouting scenario: try direct cast
+            Ptr<ns3::gpsr::RoutingProtocol> gpsr = DynamicCast<ns3::gpsr::RoutingProtocol>(routing);
+            if (gpsr)
+            {
+                ctrlBytes += gpsr->GetCtrlHelloTxBytes();
+                ctrlPkts += gpsr->GetCtrlHelloTxPkts();
+            }
+        }
+    }
+    std::cout << "Total Rx packets (delivered) = " << g_rxPktDelivered << std::endl;
+    std::cout << "Total Rx payload bytes = " << g_rxPayloadBytes << std::endl;
+    std::cout << "Total HELLO ctrl bytes = " << ctrlBytes << std::endl;
+    std::cout << "Total HELLO ctrl pkts = " << ctrlPkts << std::endl;
+    if (g_rxPayloadBytes > 0)
+    {
+        std::cout << "Control overhead (bytes) = " << (double)ctrlBytes / g_rxPayloadBytes << std::endl;
+    }
+    if (g_rxPktDelivered > 0)
+    {
+        std::cout << "NRL (pkts) = " << (double)ctrlPkts / g_rxPktDelivered << std::endl;
     }
 
     Simulator::Destroy();

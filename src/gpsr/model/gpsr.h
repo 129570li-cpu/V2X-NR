@@ -236,6 +236,15 @@ class RoutingProtocol : public Ipv4RoutingProtocol
     void SetDownTarget(IpL4Protocol::DownTargetCallback callback);
     /// Get the down target callback
     IpL4Protocol::DownTargetCallback GetDownTarget() const;
+    
+    /// Control overhead statistics - HELLO packets
+    uint64_t GetCtrlHelloTxBytes() const { return m_ctrlHelloTxBytes; }
+    uint64_t GetCtrlHelloTxPkts() const { return m_ctrlHelloTxPkts; }
+
+  private:
+    /// Control overhead counters
+    uint64_t m_ctrlHelloTxBytes = 0;
+    uint64_t m_ctrlHelloTxPkts = 0;
 };
 
 } // namespace gpsr

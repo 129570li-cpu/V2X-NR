@@ -552,6 +552,11 @@ RoutingProtocol::SendHello()
         }
 
         socket->SendTo(packet, 0, InetSocketAddress(destination, GPSR_PORT));
+        
+        // Update control overhead statistics
+        m_ctrlHelloTxPkts++;
+        m_ctrlHelloTxBytes += packet->GetSize();  // GPSR+UDP payload (add +28 for IP/UDP headers if needed)
+        
         NS_LOG_DEBUG("Sent HELLO from " << iface.GetLocal() << " to " << destination
                      << " with " << neighborList.size() << " neighbors");
     }
@@ -1065,6 +1070,18 @@ RoutingProtocol::RouteInput(Ptr<const Packet> p,
                 packet->RemoveHeader(phdr);
                 packet->RemovePacketTag(gpsrTag);
                 packet->AddPacketTag(localDeliveredTag);  // Mark as processed
+                
+                // Read hop count for statistics
+                GpsrHopCountTag hopTag;
+                uint8_t hopCount = 0;
+                if (packet->PeekPacketTag(hopTag))
+                {
+                    hopCount = hopTag.GetHopCount();
+                    packet->RemovePacketTag(hopTag);  // Clean up tag
+                }
+                NS_LOG_INFO("LocalDelivery: UID=" << packet->GetUid() 
+                            << " hops=" << (int)hopCount 
+                            << " size=" << packet->GetSize());
                 NS_LOG_DEBUG("Removed GPSR headers: pre=" << preSize << " post=" << packet->GetSize());
             }
             else
@@ -1257,6 +1274,15 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
         // Sync tag with header
         GpsrHeaderTag tag(GPSRTYPE_POS);
         if (!p->PeekPacketTag(tag)) { p->AddPacketTag(tag); }
+        
+        // Increment hop count for statistics
+        GpsrHopCountTag hopTag;
+        if (p->PeekPacketTag(hopTag))
+        {
+            p->RemovePacketTag(hopTag);
+            hopTag.Increment();
+            p->AddPacketTag(hopTag);
+        }
         
         // DEBUG: Verify header was written correctly
         {
@@ -1673,6 +1699,15 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
     GpsrHeaderTag newTag(GPSRTYPE_POS);
     if (!p->PeekPacketTag(newTag)) { p->AddPacketTag(newTag); }
     
+    // Increment hop count for statistics
+    GpsrHopCountTag hopTag;
+    if (p->PeekPacketTag(hopTag))
+    {
+        p->RemovePacketTag(hopTag);
+        hopTag.Increment();
+        p->AddPacketTag(hopTag);
+    }
+    
     // 诊断日志：发送时的包大小和 header 详情
     NS_LOG_DEBUG("RecoveryMode-TX: UID=" << p->GetUid()
                  << " pktSize=" << p->GetSize()
@@ -2061,6 +2096,10 @@ RoutingProtocol::AddHeaders(Ptr<Packet> p,
     {
         p->AddPacketTag(tag);
     }
+    
+    // Add hop count tag for statistics (initial hop = 0)
+    GpsrHopCountTag hopTag(0);
+    p->AddPacketTag(hopTag);
     
     // Add GpsrNextHopTag to pass next-hop info to EpcUeNas for TFT matching
     // Remove any existing tag first (in case of re-routing)

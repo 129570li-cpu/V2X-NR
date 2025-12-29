@@ -32,6 +32,37 @@ enum MessageType
 
 /**
  * \ingroup gpsr
+ * \brief Tag to track hop count for statistics
+ */
+class GpsrHopCountTag : public Tag
+{
+  public:
+    GpsrHopCountTag() : m_hopCount(0) {}
+    GpsrHopCountTag(uint8_t hops) : m_hopCount(hops) {}
+
+    static TypeId GetTypeId()
+    {
+        static TypeId tid = TypeId("ns3::gpsr::GpsrHopCountTag")
+            .SetParent<Tag>()
+            .AddConstructor<GpsrHopCountTag>();
+        return tid;
+    }
+    TypeId GetInstanceTypeId() const override { return GetTypeId(); }
+
+    uint32_t GetSerializedSize() const override { return 1; }
+    void Serialize(TagBuffer i) const override { i.WriteU8(m_hopCount); }
+    void Deserialize(TagBuffer i) override { m_hopCount = i.ReadU8(); }
+    void Print(std::ostream& os) const override { os << "HopCount=" << (int)m_hopCount; }
+
+    uint8_t GetHopCount() const { return m_hopCount; }
+    void Increment() { if (m_hopCount < 255) m_hopCount++; }
+
+  private:
+    uint8_t m_hopCount;
+};
+
+/**
+ * \ingroup gpsr
  * \brief GPSR Type Header
  */
 class TypeHeader : public Header
