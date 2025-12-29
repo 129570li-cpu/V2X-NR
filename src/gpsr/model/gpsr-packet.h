@@ -206,6 +206,10 @@ class HelloHeader : public Header
     const std::vector<NeighborSummary>& GetNeighbors() const { return m_neighbors; }
     uint8_t GetNeighborCount() const { return static_cast<uint8_t>(m_neighbors.size()); }
 
+    // HELLO sequence number for PRR calculation (LDT)
+    void SetSeq(uint16_t seq) { m_seq = seq; }
+    uint16_t GetSeq() const { return m_seq; }
+
     bool operator==(const HelloHeader& o) const;
 
   private:
@@ -215,6 +219,7 @@ class HelloHeader : public Header
     double m_velocityY;       ///< Sender's Y velocity component
     uint32_t m_timestamp;     ///< Timestamp (ms since epoch or simulation start)
     std::vector<NeighborSummary> m_neighbors; ///< Top-K neighbor summaries
+    uint16_t m_seq{0};        ///< HELLO sequence number for PRR calculation
 };
 
 std::ostream& operator<<(std::ostream& os, const HelloHeader& h);

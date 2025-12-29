@@ -227,12 +227,13 @@ class PositionTable
                                 Vector selfPos,
                                 Vector selfVel);
 
-
     /**
      * \brief Neighbor entry structure with position, velocity, SINR, and two-hop data
+     *        Extended with Local Digital Twin fields for prediction and quality tracking
      */
     struct NeighborEntry
     {
+        // === 基础字段（已有） ===
         Vector position;                   // 1-hop neighbor position
         Vector velocity;                   // 1-hop neighbor velocity vector
         Time lastUpdate;                   // Position update time from HELLO
@@ -240,11 +241,87 @@ class PositionTable
         double smoothedSinr = -1.0;        // EWMA-filtered SINR for stability
         Time lastSinrUpdate = Seconds(0);  // Time of last valid SINR update
         std::vector<NeighborSummary> twoHopNeighbors; // 2-hop neighbors via this 1-hop
+
+        // === Local Digital Twin 扩展字段 ===
+        double prr = 1.0;                  // Packet Reception Ratio (EWMA), default optimistic
+        Time lastPrrUpdate = Seconds(0);   // Time of last PRR update
+        Vector predPosition;               // Predicted position at predTime
+        Time predTime = Seconds(0);        // Time point for prediction
+        double confidence = 1.0;           // Data freshness confidence [0,1]
+        
+        // === HELLO 序号跟踪字段（LDT PRR）===
+        bool hasHelloSeq = false;          // 是否已收到过 HELLO
+        uint16_t lastHelloSeq = 0;         // 上次收到的 HELLO 序号
     };
 
     /// Typedef for table iterator
     typedef std::map<Ipv4Address, NeighborEntry>::iterator TableIterator;
     typedef std::map<Ipv4Address, NeighborEntry>::const_iterator TableConstIterator;
+
+    // ========== Local Digital Twin (LDT) 接口 ==========
+    
+    /**
+     * \brief Update PRR for a neighbor using EWMA
+     * \param id Neighbor IPv4 address
+     * \param success Whether the packet was successfully received
+     */
+    void UpdatePrr(Ipv4Address id, bool success);
+
+    /**
+     * \brief Update PRR with multiple consecutive misses (closed-form EWMA)
+     * Uses: prr = prr * (1-α)^miss, then prr = α + (1-α)*prr for success
+     * \param id Neighbor IPv4 address
+     * \param misses Number of missed HELLO packets
+     */
+    void UpdatePrrMisses(Ipv4Address id, uint16_t misses);
+
+    /**
+     * \brief Get the last update time for a neighbor entry
+     * \param id Neighbor IPv4 address
+     * \return Last update time, or Seconds(0) if not found
+     */
+    Time GetEntryUpdateTime(Ipv4Address id) const;
+
+    /**
+     * \brief Update PRR from HELLO sequence number (replaces inline loop in RecvGpsr)
+     * Handles: first HELLO, expired entry reset, gap detection with clamping
+     * \param id Neighbor IPv4 address
+     * \param curSeq Current HELLO sequence number
+     * \param expired Whether the entry was considered expired before this HELLO
+     */
+    void UpdatePrrFromHello(Ipv4Address id, uint16_t curSeq, bool expired);
+
+    /**
+     * \brief Predict neighbor position using constant velocity model
+     * \param entry The neighbor entry
+     * \param now Current time
+     * \param predWindow Prediction window (how far into the future)
+     * \return Predicted position
+     */
+    static Vector PredictPosition(const NeighborEntry& entry, Time now, Time predWindow);
+
+    /**
+     * \brief Calculate confidence based on time decay
+     * conf = exp(-(now - lastUpdate) / tau)
+     * \param entry The neighbor entry
+     * \param now Current time
+     * \param tau Time constant for decay (default 1.5s)
+     * \return Confidence value [0, 1]
+     */
+    static double GetConfidence(const NeighborEntry& entry, Time now, double tau = 1.5);
+
+    /**
+     * \brief Get predicted entry state (combines position prediction + confidence)
+     * \param id Neighbor IPv4 address
+     * \param now Current time
+     * \param predWindow Prediction window
+     * \param tau Confidence decay constant
+     * \param[out] predPos Predicted position
+     * \param[out] conf Confidence value
+     * \return True if neighbor exists and entry is valid
+     */
+    bool GetPredictedEntry(Ipv4Address id, Time now, Time predWindow, double tau,
+                           Vector& predPos, double& conf);
     
     /**
      * \brief Get iterator to beginning of neighbor table
@@ -255,6 +332,16 @@ class PositionTable
      * \brief Get iterator to end of neighbor table
      */
     TableIterator GetTableEnd() { return m_table.end(); }
+
+    // ========== LDT 参数 setter ==========
+    void SetTwinEnabled(bool enabled) { m_twinEnabled = enabled; }
+    void SetTwinMinConf(double val) { m_twinMinConf = val; }
+    void SetTwinMinPrr(double val) { m_twinMinPrr = val; }
+    void SetTwinMinRet(double val) { m_twinMinRet = val; }
+    void SetTwinPredWindow(double val) { m_twinPredWindow = val; }
+    void SetTwinConfTau(double val) { m_twinConfTau = val; }
+    void SetTwinUsePrr(bool val) { m_twinUsePrr = val; }
+    Time GetEntryLifeTime() const { return m_entryLifeTime; }
 
   private:
     Time m_entryLifeTime;
@@ -272,6 +359,15 @@ class PositionTable
      * \brief Calculate distance between two positions
      */
     double CalculateDistance(Vector a, Vector b);
+    
+    // ========== LDT 参数成员 ==========
+    bool m_twinEnabled{true};
+    double m_twinMinConf{0.3};
+    double m_twinMinPrr{0.5};
+    double m_twinMinRet{0.5};
+    double m_twinPredWindow{0.5};
+    double m_twinConfTau{1.5};
+    bool m_twinUsePrr{true};
 };
 
 } // namespace gpsr

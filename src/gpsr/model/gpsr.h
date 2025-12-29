@@ -209,6 +209,16 @@ class RoutingProtocol : public Ipv4RoutingProtocol
     bool m_adaptiveHelloEnabled{true}; ///< Enable adaptive HELLO (true) or fixed interval (false)
     // ========== End Adaptive HELLO parameters ==========
     
+    // ========== Local Digital Twin (LDT) parameters ==========
+    bool m_twinEnabled{true};          ///< Enable Local Digital Twin mode
+    double m_twinMinConf{0.3};         ///< Minimum confidence threshold
+    double m_twinMinPrr{0.5};          ///< Minimum PRR threshold
+    double m_twinMinRet{0.5};          ///< Minimum Remaining Effective Time (seconds)
+    double m_twinPredWindow{0.5};      ///< Prediction window (seconds)
+    double m_twinConfTau{1.5};         ///< Confidence decay time constant (seconds)
+    bool m_twinUsePrr{true};           ///< Use PRR in quality assessment
+    // ========== End LDT parameters ==========
+    
     uint32_t m_maxQueueLen;
     Time m_maxQueueTime;
     RequestQueue m_queue;
@@ -245,6 +255,9 @@ class RoutingProtocol : public Ipv4RoutingProtocol
     /// Control overhead counters
     uint64_t m_ctrlHelloTxBytes = 0;
     uint64_t m_ctrlHelloTxPkts = 0;
+    
+    /// HELLO sequence number for LDT PRR calculation
+    uint16_t m_helloSeq = 0;
 };
 
 } // namespace gpsr

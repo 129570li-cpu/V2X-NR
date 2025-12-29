@@ -145,6 +145,26 @@ RxPacketTraceForDelay(Ptr<const Packet> p,
     NS_LOG_DEBUG(" RX: " << mapKey << delay);
 }
 
+/**
+ * \brief Extended RX callback (previously updated PRR, now just delegates)
+ * 
+ * Note: PRR update has been moved to HELLO sequence-based tracking in GPSR.
+ * This function now simply calls the standard delay tracking function.
+ * Kept for backward compatibility with callback bindings.
+ */
+void
+RxPacketTraceForDelayWithPrr(Ptr<Node> rxNode,
+                              Ptr<const Packet> p,
+                              const Address& srcAddrs,
+                              const Address& dstAddrs,
+                              const SeqTsSizeHeader& seqTsSizeHeader)
+{
+    // PRR is now updated via HELLO sequence numbers in gpsr.cc RecvGpsr()
+    // Application-layer PRR has been removed to avoid "end-to-end reliability" confusion
+    // Only do standard delay tracking
+    RxPacketTraceForDelay(p, srcAddrs, dstAddrs, seqTsSizeHeader);
+}
+
 // NR-specific declarations removed for 802.11p version
 
 /**
@@ -216,15 +236,16 @@ void GenerateDistantTraffic()
         }
         
         // Install PacketSink on destination node for this specific port
+        Ptr<Node> dstNode = g_ueNodeContainerPtr->Get(dstNodeId);
         PacketSinkHelper sinkHelper("ns3::UdpSocketFactory", 
                                     InetSocketAddress(Ipv4Address::GetAny(), port));
         sinkHelper.SetAttribute("EnableSeqTsSizeHeader", BooleanValue(true));
-        ApplicationContainer sinkApp = sinkHelper.Install(g_ueNodeContainerPtr->Get(dstNodeId));
+        ApplicationContainer sinkApp = sinkHelper.Install(dstNode);
         sinkApp.Start(Seconds(0.0));
         sinkApp.Stop(Seconds(6.0));  // Slightly longer than OnOff to catch all packets
-        // Connect RX trace for this sink
+        // Connect RX trace with PRR update (bound to destination node)
         sinkApp.Get(0)->TraceConnectWithoutContext("RxWithSeqTsSize",
-                                                   MakeCallback(&RxPacketTraceForDelay));
+                                                   MakeBoundCallback(&RxPacketTraceForDelayWithPrr, dstNode));
         
         // Create and install OnOffApplication
         OnOffHelper onoff("ns3::UdpSocketFactory", 
@@ -332,8 +353,18 @@ main(int argc, char* argv[])
     cmd.AddValue("dataRate", "The data rate in kilobits per second for best effort traffic", dataRate);
     cmd.AddValue("testing", "Testing flag for verification", testing);
 
+    // LDT parameters (passed via Config::SetDefault before GPSR install)
+    bool twinEnabled = true;
+    bool twinUsePrr = true;
+    cmd.AddValue("twinEnabled", "Enable Local Digital Twin mode", twinEnabled);
+    cmd.AddValue("twinUsePrr", "Use PRR in LDT quality assessment", twinUsePrr);
+
     // Parse the command line
     cmd.Parse(argc, argv);
+    
+    // Set GPSR TwinEnabled attribute before GPSR installation
+    Config::SetDefault("ns3::gpsr::RoutingProtocol::TwinEnabled", BooleanValue(twinEnabled));
+    Config::SetDefault("ns3::gpsr::RoutingProtocol::TwinUsePrr", BooleanValue(twinUsePrr));
     
     // Sync CLI params to global variables for traffic generation
     g_udpPacketSize = udpPacketSize;
@@ -572,8 +603,10 @@ main(int argc, char* argv[])
     }
     for (uint16_t ac = 0; ac < allServerApps.GetN(); ac++)
     {
+        // Get the node where this server app is installed
+        Ptr<Node> serverNode = allServerApps.Get(ac)->GetNode();
         allServerApps.Get(ac)->TraceConnectWithoutContext("RxWithSeqTsSize",
-                                                          MakeCallback(&RxPacketTraceForDelay));
+                                                          MakeBoundCallback(&RxPacketTraceForDelayWithPrr, serverNode));
     }
     // Global PacketSink trace connection removed - per-flow sinks connected in GenerateDistantTraffic
     /******************** END Application packet  tracing **********************/

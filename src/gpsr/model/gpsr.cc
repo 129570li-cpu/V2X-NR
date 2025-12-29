@@ -273,7 +273,43 @@ RoutingProtocol::GetTypeId()
                           "Condition check interval for adaptive HELLO",
                           TimeValue(MilliSeconds(50)),
                           MakeTimeAccessor(&RoutingProtocol::m_helloCheckInterval),
-                          MakeTimeChecker());
+                          MakeTimeChecker())
+            // ========== Local Digital Twin (LDT) attributes ==========
+            .AddAttribute("TwinEnabled",
+                          "Enable Local Digital Twin mode for enhanced routing",
+                          BooleanValue(true),
+                          MakeBooleanAccessor(&RoutingProtocol::m_twinEnabled),
+                          MakeBooleanChecker())
+            .AddAttribute("TwinMinConf",
+                          "Minimum confidence threshold for neighbor selection",
+                          DoubleValue(0.3),
+                          MakeDoubleAccessor(&RoutingProtocol::m_twinMinConf),
+                          MakeDoubleChecker<double>(0.0, 1.0))
+            .AddAttribute("TwinMinPrr",
+                          "Minimum PRR threshold for neighbor selection",
+                          DoubleValue(0.5),
+                          MakeDoubleAccessor(&RoutingProtocol::m_twinMinPrr),
+                          MakeDoubleChecker<double>(0.0, 1.0))
+            .AddAttribute("TwinMinRet",
+                          "Minimum Remaining Effective Time (seconds)",
+                          DoubleValue(0.5),
+                          MakeDoubleAccessor(&RoutingProtocol::m_twinMinRet),
+                          MakeDoubleChecker<double>(0.0, 100.0))
+            .AddAttribute("TwinPredWindow",
+                          "Prediction window for position estimation (seconds)",
+                          DoubleValue(0.5),
+                          MakeDoubleAccessor(&RoutingProtocol::m_twinPredWindow),
+                          MakeDoubleChecker<double>(0.0, 10.0))
+            .AddAttribute("TwinConfTau",
+                          "Confidence decay time constant (seconds)",
+                          DoubleValue(1.5),
+                          MakeDoubleAccessor(&RoutingProtocol::m_twinConfTau),
+                          MakeDoubleChecker<double>(0.1, 60.0))
+            .AddAttribute("TwinUsePrr",
+                          "Use PRR in quality assessment",
+                          BooleanValue(true),
+                          MakeBooleanAccessor(&RoutingProtocol::m_twinUsePrr),
+                          MakeBooleanChecker());
     return tid;
 }
 
@@ -362,6 +398,15 @@ RoutingProtocol::SetIpv4(Ptr<Ipv4> ipv4)
     m_checkQueueTimer.SetFunction(&RoutingProtocol::CheckQueue, this);
 
     Simulator::ScheduleNow(&RoutingProtocol::Start, this);
+    
+    // ========== Pass LDT parameters to PositionTable ==========
+    m_neighbors.SetTwinEnabled(m_twinEnabled);
+    m_neighbors.SetTwinMinConf(m_twinMinConf);
+    m_neighbors.SetTwinMinPrr(m_twinMinPrr);
+    m_neighbors.SetTwinMinRet(m_twinMinRet);
+    m_neighbors.SetTwinPredWindow(m_twinPredWindow);
+    m_neighbors.SetTwinConfTau(m_twinConfTau);
+    m_neighbors.SetTwinUsePrr(m_twinUsePrr);
 }
 
 void
@@ -531,6 +576,9 @@ RoutingProtocol::SendHello()
             HelloHeader::MAX_NEIGHBORS,
             pos);  // Current node position for distance sorting
         helloHeader.SetNeighbors(neighborList);
+        
+        // Set sequence number for LDT PRR calculation
+        helloHeader.SetSeq(m_helloSeq++);
 
         Ptr<Packet> packet = Create<Packet>();
         packet->AddHeader(helloHeader);
@@ -607,8 +655,8 @@ RoutingProtocol::RecvGpsr(Ptr<Socket> socket)
 
     if (tHeader.Get() == GPSRTYPE_HELLO)
     {
-        // Extended HelloHeader: min 37 bytes (16+16+4+1 = position+velocity+timestamp+count)
-        if (packet->GetSize() < 37)
+        // Extended HelloHeader: min 39 bytes (16+16+4+2+1 = position+velocity+timestamp+seq+count)
+        if (packet->GetSize() < 39)
         {
             NS_LOG_DEBUG("Packet too small for extended HelloHeader, size: " << packet->GetSize());
             return;
@@ -634,10 +682,20 @@ RoutingProtocol::RecvGpsr(Ptr<Socket> socket)
 
         NS_LOG_DEBUG("HELLO from " << sender << " pos(" << pos.x << "," << pos.y << ") "
                      << "vel(" << vel.x << "," << vel.y << ") "
-                     << "ts:" << timestamp << " 2hop:" << twoHopNeighbors.size());
+                     << "ts:" << timestamp << " seq:" << hdr.GetSeq() << " 2hop:" << twoHopNeighbors.size());
+        
+        // ========== 必改2：过期保护，避免大缺口误惩罚 ==========
+        Time now = Simulator::Now();
+        Time oldUpdate = m_neighbors.GetEntryUpdateTime(sender);
+        Time expiryThreshold = m_neighbors.GetEntryLifeTime();  // 使用实际邻居生命周期
+        bool expired = (oldUpdate != Seconds(0)) && ((now - oldUpdate) > expiryThreshold);
         
         // Update 1-hop neighbor with extended info (velocity, two-hop neighbors)
         m_neighbors.AddEntryExtended(sender, pos, vel, twoHopNeighbors);
+        
+        // ========== 建议2：调用 UpdatePrrFromHello 替代线性扫描 ==========
+        uint16_t curSeq = hdr.GetSeq();
+        m_neighbors.UpdatePrrFromHello(sender, curSeq, expired);
         
         // Log the full current neighbor list
         NS_LOG_DEBUG("NEIGHBOR LIST: Node " << receiver << " neighbors: " << m_neighbors.GetNeighborList());

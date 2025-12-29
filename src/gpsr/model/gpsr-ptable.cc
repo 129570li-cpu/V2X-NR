@@ -323,6 +323,12 @@ PositionTable::BestNeighborTwoHop(Vector dstPosition, Vector nodePos, Vector nod
     // Single Purge at the beginning
     Purge();
 
+    // If LDT disabled, fall back to classic GPSR greedy
+    if (!m_twinEnabled)
+    {
+        return BestNeighbor(dstPosition, nodePos);
+    }
+
     double initialDistance = CalculateDistance(nodePos, dstPosition);
 
     if (m_table.empty())
@@ -335,61 +341,99 @@ PositionTable::BestNeighborTwoHop(Vector dstPosition, Vector nodePos, Vector nod
     double bestScore = -1.0;
     double bestDistance = std::numeric_limits<double>::max();
 
-    // SINR threshold and aging parameters (same as BestNeighbor)
-    const double SINR_THRESHOLD = 3.0;  // Linear ~5dB (less strict)
-    const Time AGING_TIMEOUT = Seconds(5.0);
+    // ========== Local Digital Twin (LDT) 参数 (使用成员变量) ==========
+    const double SINR_THRESHOLD = 3.0;      // Linear ~5dB (固定)
+    const double COMM_RANGE = 300.0;        // 通信范围（米，固定）
     
-    // Score all neighbors that make forward progress
-    for (const auto& entry : m_table)
+    Time now = Simulator::Now();
+    Time predWindow = Seconds(m_twinPredWindow);
+    
+    // Score all neighbors with LDT filters
+    for (auto& entry : m_table)
     {
-        // Use smoothed SINR if available (same as scoring logic)
+        // ========== LDT 过滤 1：置信度 ==========
+        double conf = GetConfidence(entry.second, now, m_twinConfTau);
+        if (conf < m_twinMinConf)
+        {
+            NS_LOG_DEBUG("LDT: " << entry.first << " rejected by conf=" << conf);
+            continue;
+        }
+        
+        // ========== LDT 过滤 2：PRR (可通过 TwinUsePrr 关闭) ==========
+        if (m_twinUsePrr && entry.second.prr < m_twinMinPrr)
+        {
+            NS_LOG_DEBUG("LDT: " << entry.first << " rejected by prr=" << entry.second.prr);
+            continue;
+        }
+        
+        // ========== LDT 过滤 3：SINR ==========
         double sinrValue = (entry.second.smoothedSinr > 0) 
                            ? entry.second.smoothedSinr 
                            : entry.second.sinr;
-        
-        // Quality filter: valid SINR, above threshold, not aged
-        if (sinrValue < SINR_THRESHOLD ||
-            (Simulator::Now() - entry.second.lastSinrUpdate) > AGING_TIMEOUT)
+        if (sinrValue < SINR_THRESHOLD)
         {
-            continue;  // Skip neighbors with poor/stale link quality
+            NS_LOG_DEBUG("LDT: " << entry.first << " rejected by sinr=" << sinrValue);
+            continue;
         }
         
-        double distance = CalculateDistance(entry.second.position, dstPosition);
-        
-        // Only consider neighbors that make progress toward destination
-        if (distance >= initialDistance)
+        // ========== LDT 过滤 4：链路剩余时间 (RET) ==========
+        double ret = CalculateLinkDuration(nodePos, nodeVel, 
+                                           entry.second.position, entry.second.velocity,
+                                           COMM_RANGE);
+        if (ret < m_twinMinRet)
         {
+            NS_LOG_DEBUG("LDT: " << entry.first << " rejected by RET=" << ret);
+            continue;
+        }
+        
+        // ========== LDT 预测位置计算进展 ==========
+        Vector predPos = PredictPosition(entry.second, now, predWindow);
+        double predDistance = CalculateDistance(predPos, dstPosition);
+        
+        // Only consider neighbors that make progress toward destination (using predicted position)
+        if (predDistance >= initialDistance)
+        {
+            NS_LOG_DEBUG("LDT: " << entry.first << " no progress (predDist=" << predDistance 
+                         << " >= initDist=" << initialDistance << ")");
             continue;
         }
 
         // Calculate composite score using CalculateTwoHopScore
         double score = CalculateTwoHopScore(entry.first, dstPosition, nodePos, nodeVel);
         
+        // ========== LDT 综合评分加权 ==========
+        // Boost score by confidence and PRR
+        double ldtBoost = 0.5 * conf + 0.3 * entry.second.prr + 0.2 * std::min(1.0, ret / 5.0);
+        score *= (0.7 + 0.3 * ldtBoost);  // Score adjusted by LDT quality
+        
         if (score < 0)
         {
-            // Invalid score, skip
             continue;
         }
 
         // Select neighbor with highest score
-        // If scores are equal, prefer the one closer to destination
-        if (score > bestScore || (score == bestScore && distance < bestDistance))
+        if (score > bestScore || (score == bestScore && predDistance < bestDistance))
         {
             bestScore = score;
             bestNeighbor = entry.first;
-            bestDistance = distance;
+            bestDistance = predDistance;
+            
+            // Update entry's predicted values (for debugging/logging)
+            entry.second.predPosition = predPos;
+            entry.second.predTime = now + predWindow;
+            entry.second.confidence = conf;
         }
     }
 
     if (bestNeighbor != Ipv4Address::GetZero())
     {
-        NS_LOG_DEBUG("BestNeighborTwoHop: selected " << bestNeighbor 
-                     << " score=" << bestScore << " dist=" << bestDistance);
+        NS_LOG_DEBUG("BestNeighborTwoHop(LDT): selected " << bestNeighbor 
+                     << " score=" << bestScore << " predDist=" << bestDistance);
         return bestNeighbor;
     }
 
-    // No neighbor passed scoring - trigger perimeter mode
-    NS_LOG_DEBUG("BestNeighborTwoHop: no scored neighbor, entering perimeter mode");
+    // No neighbor passed LDT scoring - trigger perimeter mode
+    NS_LOG_DEBUG("BestNeighborTwoHop(LDT): no scored neighbor, entering perimeter mode");
     return Ipv4Address::GetZero();
 }
 
@@ -905,6 +949,171 @@ PositionTable::CalculateTwoHopScore(Ipv4Address neighborId,
     }
     
     return finalScore;
+}
+
+// ========== Local Digital Twin (LDT) 接口实现 ==========
+
+void
+PositionTable::UpdatePrr(Ipv4Address id, bool success)
+{
+    NS_LOG_FUNCTION(this << id << success);
+    
+    auto it = m_table.find(id);
+    if (it == m_table.end())
+    {
+        NS_LOG_DEBUG("UpdatePrr: neighbor " << id << " not found");
+        return;
+    }
+    
+    // EWMA update: prr' = alpha * sample + (1 - alpha) * prr
+    const double EWMA_ALPHA = 0.2;  // Lower alpha = smoother, slower response
+    double sample = success ? 1.0 : 0.0;
+    it->second.prr = EWMA_ALPHA * sample + (1.0 - EWMA_ALPHA) * it->second.prr;
+    it->second.lastPrrUpdate = Simulator::Now();
+    
+    NS_LOG_DEBUG("UpdatePrr: " << id << " success=" << success 
+                 << " prr=" << it->second.prr);
+}
+
+void
+PositionTable::UpdatePrrMisses(Ipv4Address id, uint16_t misses)
+{
+    NS_LOG_FUNCTION(this << id << misses);
+    
+    auto it = m_table.find(id);
+    if (it == m_table.end())
+    {
+        NS_LOG_DEBUG("UpdatePrrMisses: neighbor " << id << " not found");
+        return;
+    }
+    
+    if (misses == 0)
+    {
+        return;  // No misses, nothing to update
+    }
+    
+    // Closed-form EWMA for multiple consecutive misses:
+    // prr = prr * (1 - alpha)^misses
+    const double EWMA_ALPHA = 0.2;
+    double decay = std::pow(1.0 - EWMA_ALPHA, misses);
+    it->second.prr *= decay;
+    it->second.lastPrrUpdate = Simulator::Now();
+    
+    NS_LOG_DEBUG("UpdatePrrMisses: " << id << " misses=" << misses 
+                 << " decay=" << decay << " prr=" << it->second.prr);
+}
+
+Vector
+PositionTable::PredictPosition(const NeighborEntry& entry, Time now, Time predWindow)
+{
+    // Constant velocity model: p' = p + v * Δt
+    double dt = (now - entry.lastUpdate).GetSeconds() + predWindow.GetSeconds();
+    
+    Vector predicted;
+    predicted.x = entry.position.x + entry.velocity.x * dt;
+    predicted.y = entry.position.y + entry.velocity.y * dt;
+    predicted.z = entry.position.z + entry.velocity.z * dt;
+    
+    return predicted;
+}
+
+double
+PositionTable::GetConfidence(const NeighborEntry& entry, Time now, double tau)
+{
+    // Exponential time decay: conf = exp(-(now - lastUpdate) / tau)
+    double age = (now - entry.lastUpdate).GetSeconds();
+    if (age < 0) age = 0;  // Should not happen, but safety check
+    
+    double conf = std::exp(-age / tau);
+    return std::max(0.0, std::min(1.0, conf));  // Clamp to [0, 1]
+}
+
+bool
+PositionTable::GetPredictedEntry(Ipv4Address id, Time now, Time predWindow, double tau,
+                                  Vector& predPos, double& conf)
+{
+    auto it = m_table.find(id);
+    if (it == m_table.end())
+    {
+        return false;
+    }
+    
+    const NeighborEntry& entry = it->second;
+    
+    // Calculate predicted position and confidence
+    predPos = PredictPosition(entry, now, predWindow);
+    conf = GetConfidence(entry, now, tau);
+    
+    // Also update the cached values in the entry (for debugging/logging)
+    // Note: We're modifying through iterator, which is allowed
+    it->second.predPosition = predPos;
+    it->second.predTime = now + predWindow;
+    it->second.confidence = conf;
+    
+    return true;
+}
+
+Time
+PositionTable::GetEntryUpdateTime(Ipv4Address id) const
+{
+    auto it = m_table.find(id);
+    if (it == m_table.end())
+    {
+        return Seconds(0);
+    }
+    return it->second.lastUpdate;
+}
+
+void
+PositionTable::UpdatePrrFromHello(Ipv4Address id, uint16_t curSeq, bool expired)
+{
+    NS_LOG_FUNCTION(this << id << curSeq << expired);
+    
+    auto it = m_table.find(id);
+    if (it == m_table.end())
+    {
+        NS_LOG_DEBUG("UpdatePrrFromHello: neighbor " << id << " not found");
+        return;
+    }
+    
+    auto& entry = it->second;
+    Time now = Simulator::Now();
+    
+    if (expired || !entry.hasHelloSeq)
+    {
+        // First HELLO or entry was expired - reset sequence tracking
+        entry.hasHelloSeq = true;
+        entry.lastHelloSeq = curSeq;
+        entry.prr = 1.0;  // Reset to optimistic
+        entry.lastPrrUpdate = now;
+        NS_LOG_DEBUG("UpdatePrrFromHello: " << id << " reset (expired=" << expired 
+                     << ") seq=" << curSeq);
+    }
+    else
+    {
+        // Calculate missed HELLOs using uint16_t wraparound
+        uint16_t delta = curSeq - entry.lastHelloSeq;
+        
+        if (delta > 1)
+        {
+            // Clamp missed count to avoid large penalty from big gaps (建议1)
+            uint16_t missed = std::min<uint16_t>(delta - 1, 5);
+            
+            // Use closed-form update for misses
+            const double EWMA_ALPHA = 0.2;
+            double decay = std::pow(1.0 - EWMA_ALPHA, missed);
+            entry.prr *= decay;
+            
+            NS_LOG_DEBUG("UpdatePrrFromHello: " << id << " missed " << missed 
+                         << " (clamped from " << (delta-1) << ") prr=" << entry.prr);
+        }
+        
+        // Update for current successful reception
+        const double EWMA_ALPHA = 0.2;
+        entry.prr = EWMA_ALPHA * 1.0 + (1.0 - EWMA_ALPHA) * entry.prr;
+        entry.lastHelloSeq = curSeq;
+        entry.lastPrrUpdate = now;
+    }
 }
 
 } // namespace gpsr

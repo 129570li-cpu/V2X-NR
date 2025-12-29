@@ -157,9 +157,10 @@ HelloHeader::GetSerializedSize() const
     // Position: 2 * 8 = 16 bytes
     // Velocity: 2 * 8 = 16 bytes  
     // Timestamp: 4 bytes
+    // Sequence number: 2 bytes (LDT)
     // Neighbor count: 1 byte
     // Neighbors: count * 21 bytes
-    return 16 + 16 + 4 + 1 + (m_neighbors.size() * NeighborSummary::GetSerializedSize());
+    return 16 + 16 + 4 + 2 + 1 + (m_neighbors.size() * NeighborSummary::GetSerializedSize());
 }
 
 void
@@ -173,6 +174,8 @@ HelloHeader::Serialize(Buffer::Iterator i) const
     i.WriteHtonU64(DoubleToUint64(m_velocityY));
     // Timestamp
     i.WriteHtonU32(m_timestamp);
+    // Sequence number (LDT)
+    i.WriteHtonU16(m_seq);
     // Neighbor count
     uint8_t count = static_cast<uint8_t>(std::min(m_neighbors.size(), 
                                                    static_cast<size_t>(MAX_NEIGHBORS)));
@@ -196,6 +199,8 @@ HelloHeader::Deserialize(Buffer::Iterator start)
     m_velocityY = Uint64ToDouble(i.ReadNtohU64());
     // Timestamp
     m_timestamp = i.ReadNtohU32();
+    // Sequence number (LDT)
+    m_seq = i.ReadNtohU16();
     // Neighbor count with bounds and buffer validation
     uint8_t originalCount = i.ReadU8();
     
@@ -244,6 +249,7 @@ HelloHeader::Print(std::ostream& os) const
     os << "Pos:(" << m_originPosx << "," << m_originPosy << ") "
        << "Vel:(" << m_velocityX << "," << m_velocityY << ") "
        << "TS:" << m_timestamp << " "
+       << "Seq:" << m_seq << " "
        << "Neighbors:" << m_neighbors.size();
 }
 
@@ -252,7 +258,8 @@ HelloHeader::operator==(const HelloHeader& o) const
 {
     return (m_originPosx == o.m_originPosx && m_originPosy == o.m_originPosy &&
             m_velocityX == o.m_velocityX && m_velocityY == o.m_velocityY &&
-            m_timestamp == o.m_timestamp && m_neighbors.size() == o.m_neighbors.size());
+            m_timestamp == o.m_timestamp && m_seq == o.m_seq && 
+            m_neighbors.size() == o.m_neighbors.size());
 }
 
 void
