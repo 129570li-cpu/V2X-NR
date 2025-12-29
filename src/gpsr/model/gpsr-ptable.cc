@@ -185,6 +185,22 @@ PositionTable::GetPosition(Ipv4Address id)
     return GetInvalidPosition();
 }
 
+Ipv4Address
+PositionTable::GetNeighborByPosition(Vector pos, double tolerance) const
+{
+    for (const auto& entry : m_table)
+    {
+        double dx = entry.second.position.x - pos.x;
+        double dy = entry.second.position.y - pos.y;
+        double dist = std::sqrt(dx*dx + dy*dy);
+        if (dist < tolerance)
+        {
+            return entry.first;
+        }
+    }
+    return Ipv4Address::GetZero();
+}
+
 bool
 PositionTable::IsNeighbour(Ipv4Address id)
 {
@@ -218,6 +234,9 @@ PositionTable::Purge()
     {
         NS_LOG_DEBUG("Purging neighbor " << addr);
         m_table.erase(addr);
+        // 同步清理 DT/RST
+        m_denyTable.erase(addr);
+        m_rstTable.erase(addr);
     }
 }
 
@@ -226,6 +245,8 @@ PositionTable::Clear()
 {
     NS_LOG_FUNCTION(this);
     m_table.clear();
+    m_denyTable.clear();
+    m_rstTable.clear();
 }
 
 double
@@ -316,9 +337,10 @@ PositionTable::BestNeighbor(Vector dstPosition, Vector nodePos)
 }
 
 Ipv4Address
-PositionTable::BestNeighborTwoHop(Vector dstPosition, Vector nodePos, Vector nodeVel)
+PositionTable::BestNeighborTwoHop(Vector dstPosition, Vector nodePos, Vector nodeVel, 
+                                   Ipv4Address dstIp, uint32_t pktId, char forwardType)
 {
-    NS_LOG_FUNCTION(this << dstPosition << nodePos << nodeVel);
+    NS_LOG_FUNCTION(this << dstPosition << nodePos << nodeVel << dstIp << pktId << forwardType);
 
     // Single Purge at the beginning
     Purge();
@@ -348,9 +370,23 @@ PositionTable::BestNeighborTwoHop(Vector dstPosition, Vector nodePos, Vector nod
     Time now = Simulator::Now();
     Time predWindow = Seconds(m_twinPredWindow);
     
-    // Score all neighbors with LDT filters
+    // Score all neighbors with LDT + DT + RST filters
     for (auto& entry : m_table)
     {
+        // ========== DT 过滤 0：路径惩罚（硬过滤）==========
+        if (dstIp != Ipv4Address::GetZero() && CheckDeny(entry.first, dstIp))
+        {
+            NS_LOG_DEBUG("DT: " << entry.first << " denied for dest " << dstIp);
+            continue;
+        }
+        
+        // ========== RST 过滤 0.5：重复抑制（硬过滤）==========
+        if (pktId != 0 && CheckRst(entry.first, forwardType, pktId, dstIp))
+        {
+            NS_LOG_DEBUG("RST: " << entry.first << " already sent (" << forwardType << "," << pktId << "," << dstIp << ")");
+            continue;
+        }
+        
         // ========== LDT 过滤 1：置信度 ==========
         double conf = GetConfidence(entry.second, now, m_twinConfTau);
         if (conf < m_twinMinConf)
@@ -429,6 +465,12 @@ PositionTable::BestNeighborTwoHop(Vector dstPosition, Vector nodePos, Vector nod
     {
         NS_LOG_DEBUG("BestNeighborTwoHop(LDT): selected " << bestNeighbor 
                      << " score=" << bestScore << " predDist=" << bestDistance);
+        
+        // ========== RST: 记录已选择的邻居（PA-GPSR 风格）==========
+        if (pktId != 0)
+        {
+            AddRst(bestNeighbor, forwardType, pktId, dstIp);
+        }
         return bestNeighbor;
     }
 
@@ -688,6 +730,180 @@ PositionTable::NextCCW(Ipv4Address inNeighbor, Vector nodePos)
 
     NS_LOG_DEBUG("NextCCW: from=" << inNeighbor << " next=" << nextID << " angle=" << minAngle);
     return nextID;
+}
+
+// ============ NextCCWWithRst (带 RST 检查的右手规则) ============
+Ipv4Address
+PositionTable::NextCCWWithRst(Ipv4Address inNeighbor, Vector nodePos, 
+                               char forwardType, uint16_t pktId, Ipv4Address dst)
+{
+    NS_LOG_FUNCTION(this << inNeighbor << nodePos << forwardType << pktId << dst);
+
+    Purge();
+
+    if (m_table.empty() || m_table.find(inNeighbor) == m_table.end())
+    {
+        return Ipv4Address::GetZero();
+    }
+
+    Vector inPos = m_table[inNeighbor].position;
+    double baseBrg = std::atan2(inPos.y - nodePos.y, inPos.x - nodePos.x);
+    if (baseBrg < 0) baseBrg += 2 * M_PI;
+
+    // 收集所有候选并按角度排序
+    std::vector<std::pair<double, Ipv4Address>> candidates;
+
+    for (const auto& entry : m_table)
+    {
+        if (entry.first == inNeighbor)
+            continue;
+
+        // GG Check
+        if (!IsGabrielGraphEdge(m_table, nodePos, entry.second.position, entry.first))
+            continue;
+
+        double brg = std::atan2(entry.second.position.y - nodePos.y,
+                                 entry.second.position.x - nodePos.x);
+        if (brg < 0) brg += 2 * M_PI;
+
+        double angle = brg - baseBrg;
+        if (angle < 0) angle += 2 * M_PI;
+
+        if (angle > 1e-9)
+        {
+            candidates.push_back({angle, entry.first});
+        }
+    }
+
+    // 按角度排序
+    std::sort(candidates.begin(), candidates.end());
+
+    // 依次检查 RST
+    for (const auto& cand : candidates)
+    {
+        if (!CheckRst(cand.second, forwardType, pktId, dst))
+        {
+            NS_LOG_DEBUG("NextCCWWithRst: selected " << cand.second << " (RST clean)");
+            return cand.second;
+        }
+        NS_LOG_DEBUG("NextCCWWithRst: skip " << cand.second << " (RST hit)");
+    }
+
+    return Ipv4Address::GetZero();
+}
+
+// ============ NextCW (左手规则) ============
+Ipv4Address
+PositionTable::NextCW(Ipv4Address inNeighbor, Vector nodePos)
+{
+    NS_LOG_FUNCTION(this << inNeighbor << nodePos);
+
+    Purge();
+
+    if (m_table.empty() || m_table.find(inNeighbor) == m_table.end())
+    {
+        return Ipv4Address::GetZero();
+    }
+
+    Vector inPos = m_table[inNeighbor].position;
+    double baseBrg = std::atan2(inPos.y - nodePos.y, inPos.x - nodePos.x);
+    if (baseBrg < 0) baseBrg += 2 * M_PI;
+
+    Ipv4Address nextID = Ipv4Address::GetZero();
+    double maxAngle = -1;  // Largest angle < 2*PI from base (clockwise)
+
+    for (const auto& entry : m_table)
+    {
+        if (entry.first == inNeighbor)
+            continue;
+
+        // GG Check
+        if (!IsGabrielGraphEdge(m_table, nodePos, entry.second.position, entry.first))
+            continue;
+
+        double brg = std::atan2(entry.second.position.y - nodePos.y,
+                                 entry.second.position.x - nodePos.x);
+        if (brg < 0) brg += 2 * M_PI;
+
+        // Angle CCW from base bearing
+        double angle = brg - baseBrg;
+        if (angle < 0) angle += 2 * M_PI;
+
+        // CW = largest CCW angle
+        if (angle > 1e-9 && angle > maxAngle)
+        {
+            maxAngle = angle;
+            nextID = entry.first;
+        }
+    }
+
+    if (nextID == Ipv4Address::GetZero())
+    {
+        nextID = inNeighbor;
+    }
+
+    NS_LOG_DEBUG("NextCW: from=" << inNeighbor << " next=" << nextID << " angle=" << maxAngle);
+    return nextID;
+}
+
+// ============ NextCWWithRst (带 RST 检查的左手规则) ============
+Ipv4Address
+PositionTable::NextCWWithRst(Ipv4Address inNeighbor, Vector nodePos,
+                              char forwardType, uint16_t pktId, Ipv4Address dst)
+{
+    NS_LOG_FUNCTION(this << inNeighbor << nodePos << forwardType << pktId << dst);
+
+    Purge();
+
+    if (m_table.empty() || m_table.find(inNeighbor) == m_table.end())
+    {
+        return Ipv4Address::GetZero();
+    }
+
+    Vector inPos = m_table[inNeighbor].position;
+    double baseBrg = std::atan2(inPos.y - nodePos.y, inPos.x - nodePos.x);
+    if (baseBrg < 0) baseBrg += 2 * M_PI;
+
+    // 收集所有候选并按角度排序（降序，CW优先）
+    std::vector<std::pair<double, Ipv4Address>> candidates;
+
+    for (const auto& entry : m_table)
+    {
+        if (entry.first == inNeighbor)
+            continue;
+
+        // GG Check
+        if (!IsGabrielGraphEdge(m_table, nodePos, entry.second.position, entry.first))
+            continue;
+
+        double brg = std::atan2(entry.second.position.y - nodePos.y,
+                                 entry.second.position.x - nodePos.x);
+        if (brg < 0) brg += 2 * M_PI;
+
+        double angle = brg - baseBrg;
+        if (angle < 0) angle += 2 * M_PI;
+
+        if (angle > 1e-9)
+        {
+            candidates.push_back({angle, entry.first});
+        }
+    }
+
+    // 按角度降序排序（CW = 最大角度优先）
+    std::sort(candidates.begin(), candidates.end(), std::greater<std::pair<double, Ipv4Address>>());
+
+    // 依次检查 RST
+    for (const auto& cand : candidates)
+    {
+        if (!CheckRst(cand.second, forwardType, pktId, dst))
+        {
+            NS_LOG_DEBUG("NextCWWithRst: selected " << cand.second << " (RST clean)");
+            return cand.second;
+        }
+        NS_LOG_DEBUG("NextCWWithRst: skip " << cand.second << " (RST hit)");
+    }
+
+    return Ipv4Address::GetZero();
 }
 
 void
@@ -1113,6 +1329,74 @@ PositionTable::UpdatePrrFromHello(Ipv4Address id, uint16_t curSeq, bool expired)
         entry.prr = EWMA_ALPHA * 1.0 + (1.0 - EWMA_ALPHA) * entry.prr;
         entry.lastHelloSeq = curSeq;
         entry.lastPrrUpdate = now;
+    }
+}
+
+// ========== DT (Deny Table) 实现 ==========
+
+void
+PositionTable::AddDeny(Ipv4Address neighbor, Ipv4Address dest)
+{
+    if (!m_denyEnabled) return;
+    
+    m_denyTable[neighbor].insert(dest);
+    NS_LOG_DEBUG("DT: Added deny " << neighbor << " -> " << dest);
+}
+
+bool
+PositionTable::CheckDeny(Ipv4Address neighbor, Ipv4Address dest) const
+{
+    if (!m_denyEnabled) return false;
+    
+    auto it = m_denyTable.find(neighbor);
+    if (it == m_denyTable.end()) return false;
+    
+    return it->second.count(dest) > 0;
+}
+
+void
+PositionTable::ClearDeny(Ipv4Address neighbor)
+{
+    auto it = m_denyTable.find(neighbor);
+    if (it != m_denyTable.end())
+    {
+        NS_LOG_DEBUG("DT: Cleared " << it->second.size() << " deny entries for " << neighbor);
+        m_denyTable.erase(it);
+    }
+}
+
+// ========== RST (Recently Sent Table) 实现 ==========
+
+void
+PositionTable::AddRst(Ipv4Address neighbor, char forwardType, uint32_t pktId, Ipv4Address dest)
+{
+    if (!m_rstEnabled) return;
+    
+    RstKey key{forwardType, pktId, dest.Get()};
+    m_rstTable[neighbor].insert(key);
+    NS_LOG_DEBUG("RST: Added " << neighbor << " (" << forwardType << ", " << pktId << ", " << dest << ")");
+}
+
+bool
+PositionTable::CheckRst(Ipv4Address neighbor, char forwardType, uint32_t pktId, Ipv4Address dest) const
+{
+    if (!m_rstEnabled) return false;
+    
+    auto it = m_rstTable.find(neighbor);
+    if (it == m_rstTable.end()) return false;
+    
+    RstKey key{forwardType, pktId, dest.Get()};
+    return it->second.count(key) > 0;
+}
+
+void
+PositionTable::ClearRst(Ipv4Address neighbor)
+{
+    auto it = m_rstTable.find(neighbor);
+    if (it != m_rstTable.end())
+    {
+        NS_LOG_DEBUG("RST: Cleared " << it->second.size() << " entries for " << neighbor);
+        m_rstTable.erase(it);
     }
 }
 

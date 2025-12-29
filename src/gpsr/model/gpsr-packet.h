@@ -434,6 +434,10 @@ class PositionHeader : public Header
     void SetHasHopList(uint8_t flag) { m_hasHopList = flag; }
     uint8_t GetHasHopList() const { return m_hasHopList; }
     
+    // forwardType: 'G'=Greedy, 'R'=Right-hand, 'L'=Left-hand
+    void SetForwardType(uint8_t type) { m_forwardType = type; }
+    uint8_t GetForwardType() const { return m_forwardType; }
+    
     /**
      * \brief Check if directed edge (ip1 -> ip2) exists in hop history
      * \return index of first node if found, -1 otherwise
@@ -474,6 +478,7 @@ class PositionHeader : public Header
     PeriHop m_hops[MAX_PERI_HOPS];
     uint8_t m_nhops = 0;
     uint8_t m_hasHopList = 0;  // 方案A: 只有真正添加 hop 时才置1
+    uint8_t m_forwardType = 'G';  // 'G'=Greedy, 'R'=Right, 'L'=Left
 };
 
 std::ostream& operator<<(std::ostream& os, const PositionHeader& h);

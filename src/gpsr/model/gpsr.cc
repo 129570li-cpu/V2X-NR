@@ -697,6 +697,9 @@ RoutingProtocol::RecvGpsr(Ptr<Socket> socket)
         uint16_t curSeq = hdr.GetSeq();
         m_neighbors.UpdatePrrFromHello(sender, curSeq, expired);
         
+        // ========== DT: HELLO 刷新时清除该邻居的黑名单 ==========
+        m_neighbors.ClearDeny(sender);
+        
         // Log the full current neighbor list
         NS_LOG_DEBUG("NEIGHBOR LIST: Node " << receiver << " neighbors: " << m_neighbors.GetNeighborList());
         
@@ -934,7 +937,7 @@ RoutingProtocol::RouteOutput(Ptr<Packet> p,
     else
     {
         Vector myVel = mm->GetVelocity();
-        nextHop = m_neighbors.BestNeighborTwoHop(dstPos, myPos, myVel);
+        nextHop = m_neighbors.BestNeighborTwoHop(dstPos, myPos, myVel, dst);
     }
 
     if (nextHop != Ipv4Address::GetZero())
@@ -1273,6 +1276,32 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
         RecPosition.x = hdr.GetRecPosx();
         RecPosition.y = hdr.GetRecPosy();
         inRec = hdr.GetInRec();
+        
+        // ========== DT: 收到 recovery 包时，将前一跳加入黑名单 ==========
+        if (inRec == 1)
+        {
+            Ipv4Address prevHop = Ipv4Address::GetZero();
+            
+            // 优先使用 HopList 获取前一跳 IP（更可靠）
+            if (hdr.GetNhops() > 0)
+            {
+                prevHop = Ipv4Address(hdr.GetHop(hdr.GetNhops() - 1).ip);
+                NS_LOG_DEBUG("DT: prevHop from HopList: " << prevHop);
+            }
+            else
+            {
+                // Fallback: 用位置反查（可能不准确）
+                Vector lastPos(hdr.GetLastPosx(), hdr.GetLastPosy(), 0);
+                prevHop = m_neighbors.GetNeighborByPosition(lastPos, 10.0);
+                NS_LOG_DEBUG("DT: prevHop from position fallback: " << prevHop);
+            }
+            
+            if (prevHop != Ipv4Address::GetZero())
+            {
+                m_neighbors.AddDeny(prevHop, dst);
+                NS_LOG_DEBUG("DT: Added deny " << prevHop << " -> " << dst << " (recovery packet)");
+            }
+        }
     }
 
     // Get my position
@@ -1314,7 +1343,8 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
 
     // Find best neighbor using two-hop aware scoring
     Vector myVel = mm->GetVelocity();
-    Ipv4Address nextHop = m_neighbors.BestNeighborTwoHop(Position, myPos, myVel);
+    uint16_t pktId = header.GetIdentification();  // 跨节点一致的包标识
+    Ipv4Address nextHop = m_neighbors.BestNeighborTwoHop(Position, myPos, myVel, dst, pktId, 'G');
 
     if (nextHop != Ipv4Address::GetZero())
     {
@@ -1389,6 +1419,7 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
         Ipv4Header newHeader = header;
         newHeader.SetPayloadSize(p->GetSize());
         ucb(route, p, newHeader);
+        // RST 已在 BestNeighborTwoHop 中记录
         return true;
     }
 
@@ -1400,15 +1431,36 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
         hdr.SetRecPosy(myPos.y);
         // Keep original lastPos from packet (incoming edge) - do NOT overwrite
 
-        p->AddHeader(hdr);
-        p->AddHeader(tHeader);
-        // Sync tag with header
-        GpsrHeaderTag tag(GPSRTYPE_POS);
-        if (!p->PeekPacketTag(tag)) { p->AddPacketTag(tag); }
-
         NS_LOG_LOGIC("Entering recovery-mode to " << dst << " at "
                                                   << m_ipv4->GetAddress(1, 0).GetLocal());
-        RecoveryMode(dst, p, ucb, header);
+        
+        // ========== PA-GPSR 双向恢复：同时发 R 和 L 两份包 ==========
+        // 右手包
+        {
+            PositionHeader hdrR = hdr;
+            hdrR.SetForwardType('R');
+            Ptr<Packet> pRight = p->Copy();
+            pRight->AddHeader(hdrR);
+            pRight->AddHeader(tHeader);
+            GpsrHeaderTag tagR(GPSRTYPE_POS);
+            if (!pRight->PeekPacketTag(tagR)) { pRight->AddPacketTag(tagR); }
+            RecoveryMode(dst, pRight, ucb, header);
+            NS_LOG_DEBUG("Recovery: sent RIGHT copy");
+        }
+        
+        // 左手包
+        {
+            PositionHeader hdrL = hdr;
+            hdrL.SetForwardType('L');
+            Ptr<Packet> pLeft = p->Copy();
+            pLeft->AddHeader(hdrL);
+            pLeft->AddHeader(tHeader);
+            GpsrHeaderTag tagL(GPSRTYPE_POS);
+            if (!pLeft->PeekPacketTag(tagL)) { pLeft->AddPacketTag(tagL); }
+            RecoveryMode(dst, pLeft, ucb, header);
+            NS_LOG_DEBUG("Recovery: sent LEFT copy");
+        }
+        
         return true;
     }
 
@@ -1507,33 +1559,44 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
         return;  // EXIT RecoveryMode
     }
 
-    // === Right-Hand Rule: Find Next Hop ===
+    // === Right/Left-Hand Rule: Find Next Hop (PA-GPSR style) ===
     // NS-2 uses ent_findface ONLY at perimeter ENTRY or loop recovery
-    // Regular perimeter hops use ent_next_ccw from ingress neighbor
+    // Regular perimeter hops use ent_next_ccw/cw from ingress neighbor
     Ipv4Address nextHop;
+    uint8_t forwardType = hdr.GetForwardType();  // 'R'=Right, 'L'=Left, 'G'=Greedy
+    uint16_t pktId = header.GetIdentification();
     
     if (e0From == 0 && e0To == 0)
     {
         // First entry into perimeter mode: use FindFace (ent_findface)
         nextHop = m_neighbors.FindFace(dstPos, myPos);
-        NS_LOG_DEBUG("RecoveryMode: Entry - using FindFace");
+        NS_LOG_DEBUG("RecoveryMode: Entry - using FindFace, forwardType=" << (char)forwardType);
     }
     else
     {
-        // Already in perimeter: use NextCCW from ingress neighbor (ent_next_ccw)
+        // Already in perimeter: use NextCCW/CW from ingress neighbor
         // Ingress neighbor is the last hop in history (where packet came from)
         Ipv4Address ingressNeighbor = Ipv4Address::GetZero();
         PeriHop lastHop;
+        
+        // 优先使用 HopList 获取入边邻居（步骤4）
         if (hdr.GetNhops() > 0)
         {
             lastHop = hdr.GetHop(hdr.GetNhops() - 1);
             ingressNeighbor = Ipv4Address(lastHop.ip);
+            NS_LOG_DEBUG("RecoveryMode: ingressNeighbor from HopList: " << ingressNeighbor);
+        }
+        else
+        {
+            // Fallback: 用位置反查
+            ingressNeighbor = m_neighbors.GetNeighborByPosition(previousHop, 10.0);
+            NS_LOG_DEBUG("RecoveryMode: ingressNeighbor from position fallback: " << ingressNeighbor);
         }
         
         if (ingressNeighbor != Ipv4Address::GetZero())
         {
             // peri-as-beacon: if ingress not in neighbor table, add it (NS-2 style)
-            if (!m_neighbors.IsNeighbour(ingressNeighbor))
+            if (!m_neighbors.IsNeighbour(ingressNeighbor) && hdr.GetNhops() > 0)
             {
                 Vector ingressPos(lastHop.x, lastHop.y, lastHop.z);
                 m_neighbors.AddEntry(ingressNeighbor, ingressPos);
@@ -1541,13 +1604,22 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
                              << " at (" << lastHop.x << "," << lastHop.y << ")");
             }
             
-            nextHop = m_neighbors.NextCCW(ingressNeighbor, myPos);
-            NS_LOG_DEBUG("RecoveryMode: Regular - using NextCCW from ingress=" << ingressNeighbor);
+            // 根据 forwardType 选择 CCW(R) 或 CW(L)，带 RST 检查
+            if (forwardType == 'L')
+            {
+                nextHop = m_neighbors.NextCWWithRst(ingressNeighbor, myPos, 'L', pktId, dst);
+                NS_LOG_DEBUG("RecoveryMode: Using NextCWWithRst (Left-hand) from ingress=" << ingressNeighbor);
+            }
+            else
+            {
+                nextHop = m_neighbors.NextCCWWithRst(ingressNeighbor, myPos, 'R', pktId, dst);
+                NS_LOG_DEBUG("RecoveryMode: Using NextCCWWithRst (Right-hand) from ingress=" << ingressNeighbor);
+            }
             
-            // If NextCCW still fails, drop (NS-2 doesn't fallback to FindFace here)
+            // If still fails (all candidates RST-hit), drop
             if (nextHop == Ipv4Address::GetZero())
             {
-                NS_LOG_DEBUG("RecoveryMode: NextCCW returned Zero even after peri-as-beacon. Drop.");
+                NS_LOG_DEBUG("RecoveryMode: No valid neighbor (all RST-hit or none). Drop.");
                 return;
             }
         }
@@ -1746,6 +1818,8 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
     posHeader.SetLfEdge(lfEdgeFrom, lfEdgeTo);
     // 方案A: 继承 hasHopList 标志
     posHeader.SetHasHopList(hdr.GetHasHopList());
+    // PA-GPSR: 继承 forwardType（确保 R/L 标记传递到下一跳）
+    posHeader.SetForwardType(forwardType);
     // Copy hop history from old header (with z coordinate)
     for (uint8_t h = 0; h < hdr.GetNhops(); h++)
     {
@@ -1805,7 +1879,11 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
     
     Ipv4Header newHeader = header;
     newHeader.SetPayloadSize(p->GetSize());
+    
     ucb(route, p, newHeader);
+    
+    // ========== RST: 记录已转发（RST 检查已在选邻居阶段完成）==========
+    m_neighbors.AddRst(nextHop, forwardType, pktId, dst);
 }
 
 void
@@ -1949,7 +2027,8 @@ RoutingProtocol::SendPacketFromQueue(Ipv4Address dst)
     {
         Vector dstPos = m_locationService->GetPosition(dst);
         Vector myVel = mm->GetVelocity();
-        nextHop = m_neighbors.BestNeighborTwoHop(dstPos, myPos, myVel);
+        // 队列发送时无法获取 pktId，使用默认值跳过 RST
+        nextHop = m_neighbors.BestNeighborTwoHop(dstPos, myPos, myVel, dst);
 
         if (nextHop == Ipv4Address::GetZero())
         {
@@ -2120,7 +2199,8 @@ RoutingProtocol::AddHeaders(Ptr<Packet> p,
     else
     {
         Vector myVel = mm->GetVelocity();
-        nextHop = m_neighbors.BestNeighborTwoHop(m_locationService->GetPosition(destination), myPos, myVel);
+        // AddHeaders 是源节点首次发送，无 header.GetIdentification()，跳过 RST
+        nextHop = m_neighbors.BestNeighborTwoHop(m_locationService->GetPosition(destination), myPos, myVel, destination);
         NS_LOG_DEBUG("AddHeaders: calculated best neighbor " << nextHop);
     }
 

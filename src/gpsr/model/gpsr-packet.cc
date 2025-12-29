@@ -330,8 +330,8 @@ uint32_t
 PositionHeader::GetSerializedSize() const
 {
     // Base: 8*8 (doubles) + 4 (updated) + 1 (inRec) + 8 (e0From+e0To) + 8 (lfEdgeFrom+To) = 85 bytes
-    // + 1 (hasHopList) + 1 (nhops) + nhops * 28 (each hop: 4 ip + 8 x + 8 y + 8 z)
-    return 87 + m_nhops * 28;
+    // + 1 (hasHopList) + 1 (nhops) + 1 (forwardType) + nhops * 28
+    return 88 + m_nhops * 28;
 }
 
 void
@@ -353,6 +353,8 @@ PositionHeader::Serialize(Buffer::Iterator i) const
     i.WriteHtonU32(m_lfEdgeTo);
     // hasHopList flag (方案A)
     i.WriteU8(m_hasHopList);
+    // forwardType (PA-GPSR: R/L/G)
+    i.WriteU8(m_forwardType);
     // Hop history
     i.WriteU8(m_nhops);
     for (uint8_t h = 0; h < m_nhops; h++)
@@ -384,6 +386,8 @@ PositionHeader::Deserialize(Buffer::Iterator start)
     m_lfEdgeTo = i.ReadNtohU32();
     // hasHopList flag (方案A)
     m_hasHopList = i.ReadU8();
+    // forwardType (PA-GPSR: R/L/G)
+    m_forwardType = i.ReadU8();
     // Hop history
     uint8_t packetNhops = i.ReadU8();  // Actual count in packet
     uint8_t originalNhops = packetNhops;
@@ -449,6 +453,7 @@ PositionHeader::Print(std::ostream& os) const
        << "e0: (" << m_e0From << "->" << m_e0To << ") "
        << "lfEdge: (" << m_lfEdgeFrom << "->" << m_lfEdgeTo << ") "
        << "hasHopList=" << (int)m_hasHopList << " "
+       << "fwdType=" << (char)m_forwardType << " "
        << "Hops[" << (int)m_nhops << "]: ";
     for (uint8_t h = 0; h < m_nhops; h++)
     {
@@ -467,6 +472,7 @@ PositionHeader::operator==(const PositionHeader& o) const
         m_e0From != o.m_e0From || m_e0To != o.m_e0To ||
         m_lfEdgeFrom != o.m_lfEdgeFrom || m_lfEdgeTo != o.m_lfEdgeTo ||
         m_hasHopList != o.m_hasHopList ||
+        m_forwardType != o.m_forwardType ||
         m_nhops != o.m_nhops)
     {
         return false;

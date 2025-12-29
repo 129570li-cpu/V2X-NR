@@ -72,6 +72,14 @@ class PositionTable
     Vector GetPosition(Ipv4Address id);
 
     /**
+     * \brief Find neighbor IP by position (for DT - reverse lookup)
+     * \param pos Position to search for
+     * \param tolerance Distance tolerance (default 1m)
+     * \return IPv4 address of neighbor at that position, GetZero() if not found
+     */
+    Ipv4Address GetNeighborByPosition(Vector pos, double tolerance = 1.0) const;
+
+    /**
      * \brief Checks if a node is a neighbor
      * \param id IPv4 address of the node to check
      * \return True if the node is a neighbor
@@ -103,9 +111,14 @@ class PositionTable
      * \param dstPosition Position of the destination
      * \param nodePos Position of the current node
      * \param nodeVel Velocity of the current node
+     * \param dstIp Destination IP address (for DT check)
+     * \param pktId Packet UID (for RST check, 0 to skip RST)
+     * \param forwardType Forward type 'G'=Greedy, 'R'=Right, 'L'=Left
      * \return IPv4 address of the best neighbor, GetZero() if none found
      */
-    Ipv4Address BestNeighborTwoHop(Vector dstPosition, Vector nodePos, Vector nodeVel);
+    Ipv4Address BestNeighborTwoHop(Vector dstPosition, Vector nodePos, Vector nodeVel, 
+                                    Ipv4Address dstIp = Ipv4Address::GetZero(),
+                                    uint32_t pktId = 0, char forwardType = 'G');
 
     /**
      * \brief Gets best neighbor for perimeter forwarding (right-hand rule)
@@ -133,6 +146,23 @@ class PositionTable
      * \return Next CCW neighbor on current face
      */
     Ipv4Address NextCCW(Ipv4Address inNeighbor, Vector nodePos);
+
+    /**
+     * \brief Get next CCW neighbor with RST check (skip already-sent neighbors)
+     */
+    Ipv4Address NextCCWWithRst(Ipv4Address inNeighbor, Vector nodePos,
+                                char forwardType, uint16_t pktId, Ipv4Address dst);
+
+    /**
+     * \brief Get next neighbor clockwise from given neighbor (left-hand rule)
+     */
+    Ipv4Address NextCW(Ipv4Address inNeighbor, Vector nodePos);
+
+    /**
+     * \brief Get next CW neighbor with RST check
+     */
+    Ipv4Address NextCWWithRst(Ipv4Address inNeighbor, Vector nodePos,
+                               char forwardType, uint16_t pktId, Ipv4Address dst);
 
     /**
      * \brief Calculate angle between vectors (counterclockwise)
@@ -368,6 +398,78 @@ class PositionTable
     double m_twinPredWindow{0.5};
     double m_twinConfTau{1.5};
     bool m_twinUsePrr{true};
+    
+    // ========== DT (Deny Table) 路径记忆 ==========
+    // 邻居 → 曾触发 Recovery 的目的地集合
+    std::map<Ipv4Address, std::set<Ipv4Address>> m_denyTable;
+    bool m_denyEnabled{true};  // DT 功能开关
+    
+public:
+    // DT 接口
+    void SetDenyEnabled(bool val) { m_denyEnabled = val; }
+    
+    /**
+     * \brief Add a deny entry: neighbor failed to forward to dest
+     * \param neighbor Neighbor IP that triggered recovery
+     * \param dest Destination IP that caused the failure
+     */
+    void AddDeny(Ipv4Address neighbor, Ipv4Address dest);
+    
+    /**
+     * \brief Check if neighbor is denied for destination
+     * \param neighbor Neighbor IP to check
+     * \param dest Destination IP
+     * \return True if denied (should skip this neighbor for this dest)
+     */
+    bool CheckDeny(Ipv4Address neighbor, Ipv4Address dest) const;
+    
+    /**
+     * \brief Clear all deny entries for a neighbor (on HELLO refresh)
+     * \param neighbor Neighbor IP whose deny list should be cleared
+     */
+    void ClearDeny(Ipv4Address neighbor);
+
+private:
+    // ========== RST (Recently Sent Table) 重复抑制 ==========
+    // 邻居 → 已发送的 (forwardType, pktId, dstIp) 集合
+    // forwardType: 'G'=Greedy, 'L'=Left, 'R'=Right
+    struct RstKey {
+        char forwardType;
+        uint32_t pktId;
+        uint32_t dstIp;  // Ipv4Address 的整数形式
+        
+        bool operator<(const RstKey& o) const {
+            if (forwardType != o.forwardType) return forwardType < o.forwardType;
+            if (pktId != o.pktId) return pktId < o.pktId;
+            return dstIp < o.dstIp;
+        }
+    };
+    std::map<Ipv4Address, std::set<RstKey>> m_rstTable;
+    bool m_rstEnabled{true};
+
+public:
+    // RST 接口
+    void SetRstEnabled(bool val) { m_rstEnabled = val; }
+    
+    /**
+     * \brief Add RST entry: packet was sent to neighbor
+     * \param neighbor Neighbor IP that received the packet
+     * \param forwardType 'G'=Greedy, 'L'=Left, 'R'=Right
+     * \param pktId Packet UID
+     * \param dest Destination IP
+     */
+    void AddRst(Ipv4Address neighbor, char forwardType, uint32_t pktId, Ipv4Address dest);
+    
+    /**
+     * \brief Check if packet was already sent to neighbor
+     * \return True if already sent (should skip)
+     */
+    bool CheckRst(Ipv4Address neighbor, char forwardType, uint32_t pktId, Ipv4Address dest) const;
+    
+    /**
+     * \brief Clear RST entries for a neighbor
+     */
+    void ClearRst(Ipv4Address neighbor);
 };
 
 } // namespace gpsr
