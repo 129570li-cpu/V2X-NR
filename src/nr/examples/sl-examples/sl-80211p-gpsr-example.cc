@@ -27,6 +27,8 @@ $ ./ns3 run "sl-multi-lc-example --help"
 #include "ns3/gpsr-helper.h"
 #include "ns3/gpsr.h"
 #include "ns3/gpsr-ptable.h"
+#include "ns3/gpsr-dcc.h"
+#include "ns3/gpsr-metric-supervisor.h"
 #include "ns3/stats-module.h"
 #include "ns3/traci-module.h"
 #include "ns3/ipv4-list-routing.h"
@@ -59,6 +61,10 @@ NodeContainer* g_ueNodeContainerPtr = nullptr;  //!< Pointer to UE node containe
 double g_minDistanceForTraffic = 250.0;  //!< Minimum distance (m) for multi-hop traffic
 uint32_t g_flowId = 0;                  //!< Global flow counter for unique port assignment
 uint16_t g_basePort = 10000;            //!< Base port for flow-specific PacketSink
+
+// ========== DCC Global State ==========
+Ptr<ns3::gpsr::GpsrMetricSupervisor> g_metricSupervisor = nullptr;  //!< Global CBR monitor
+std::unordered_map<uint32_t, Ptr<ns3::gpsr::GpsrDcc>> g_dccPerNode; //!< DCC per node
 
 /*
  * \brief Trace sink function to count and logging the transmitted data packets
@@ -426,6 +432,62 @@ main(int argc, char* argv[])
     // This must be called AFTER InternetStackHelper.Install()
     gpsr.Install(ueNodeContainer);
     NS_LOG_INFO("GPSR routing protocol installed on all UEs");
+
+    // ========== DCC Initialization ==========
+    // Create global MetricSupervisor for CBR monitoring
+    g_metricSupervisor = CreateObject<ns3::gpsr::GpsrMetricSupervisor>();
+    g_metricSupervisor->SetNodeContainer(ueNodeContainer);
+    g_metricSupervisor->SetChannelTechnology("80211p");
+    g_metricSupervisor->SetCBRWindow(100);   // 100ms CBR window
+    g_metricSupervisor->SetCBRAlpha(0.5);    // Exponential moving average alpha
+    g_metricSupervisor->SetSimulationTime(finalSimTime.GetSeconds());
+    g_metricSupervisor->StartCheckCBR(-1);   // Monitor all nodes
+    NS_LOG_INFO("DCC MetricSupervisor started for CBR monitoring");
+    
+    // Create DCC instance for each node and link to GPSR
+    for (uint32_t i = 0; i < ueNodeContainer.GetN(); ++i)
+    {
+        Ptr<Node> node = ueNodeContainer.Get(i);
+        
+        // Create DCC for this node
+        Ptr<ns3::gpsr::GpsrDcc> dcc = CreateObject<ns3::gpsr::GpsrDcc>();
+        std::string nodeIdStr = std::to_string(node->GetId());
+        dcc->SetupDCC(nodeIdStr, g_metricSupervisor, node, "reactive", 100);  // 100ms DCC interval
+        dcc->SetBitRate(6000000);  // 6 Mbps (802.11p OFDM Rate)
+        dcc->StartDCC();
+        g_dccPerNode[i] = dcc;
+        
+        // Link DCC to GPSR routing protocol
+        Ptr<Ipv4> ipv4 = node->GetObject<Ipv4>();
+        if (!ipv4) continue;
+        
+        Ptr<Ipv4RoutingProtocol> rp = ipv4->GetRoutingProtocol();
+        Ptr<ns3::gpsr::RoutingProtocol> gpsrProto;
+        
+        Ptr<Ipv4ListRouting> listRouting = DynamicCast<Ipv4ListRouting>(rp);
+        if (listRouting)
+        {
+            for (uint32_t j = 0; j < listRouting->GetNRoutingProtocols(); ++j)
+            {
+                int16_t priority;
+                Ptr<Ipv4RoutingProtocol> proto = listRouting->GetRoutingProtocol(j, priority);
+                gpsrProto = DynamicCast<ns3::gpsr::RoutingProtocol>(proto);
+                if (gpsrProto) break;
+            }
+        }
+        else
+        {
+            gpsrProto = DynamicCast<ns3::gpsr::RoutingProtocol>(rp);
+        }
+        
+        if (gpsrProto)
+        {
+            // Set DCC and MetricSupervisor in GPSR protocol
+            gpsrProto->SetDcc(dcc);
+            gpsrProto->SetMetricSupervisor(g_metricSupervisor);
+        }
+    }
+    NS_LOG_INFO("DCC initialized for " << ueNodeContainer.GetN() << " nodes");
 
     // ========== Build Mac48Address to IPv4 mapping + Connect WiFi SNR traces ==========
     NS_LOG_INFO("Building MAC to IP mapping and connecting WiFi SNR traces...");

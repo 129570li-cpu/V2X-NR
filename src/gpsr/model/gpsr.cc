@@ -4,13 +4,9 @@
  * Based on original GPSR implementation
  */
 
-#define NS_LOG_APPEND_CONTEXT                                                                      \
-    if (m_ipv4)                                                                                    \
-    {                                                                                              \
-        std::clog << "[node " << m_ipv4->GetObject<Node>()->GetId() << "] ";                       \
-    }
-
 #include "gpsr.h"
+#include "gpsr-dcc.h"
+#include "gpsr-metric-supervisor.h"
 
 #include "ns3/boolean.h"
 #include "ns3/double.h"
@@ -19,6 +15,7 @@
 #include "ns3/log.h"
 #include "ns3/random-variable-stream.h"
 #include "ns3/simulator.h"
+#include "ns3/string.h"
 #include "ns3/trace-source-accessor.h"
 #include "ns3/udp-socket-factory.h"
 #include "ns3/udp-l4-protocol.h"
@@ -28,6 +25,15 @@
 #include <cmath>
 #include <limits>
 #include <string>
+
+// Define NS_LOG_APPEND_CONTEXT AFTER all includes to avoid conflicts
+// with template functions in included headers (e.g., wifi-phy-state-helper.h)
+#undef NS_LOG_APPEND_CONTEXT
+#define NS_LOG_APPEND_CONTEXT                                                                      \
+    if (m_ipv4)                                                                                    \
+    {                                                                                              \
+        std::clog << "[node " << m_ipv4->GetObject<Node>()->GetId() << "] ";                       \
+    }
 
 namespace ns3
 {
@@ -273,7 +279,18 @@ RoutingProtocol::GetTypeId()
                           "Condition check interval for adaptive HELLO",
                           TimeValue(MilliSeconds(50)),
                           MakeTimeAccessor(&RoutingProtocol::m_helloCheckInterval),
-                          MakeTimeChecker());
+                          MakeTimeChecker())
+            // ========== DCC attributes ==========
+            .AddAttribute("DccEnabled",
+                          "Enable DCC (Decentralized Congestion Control) for HELLO messages",
+                          BooleanValue(true),
+                          MakeBooleanAccessor(&RoutingProtocol::m_dccEnabled),
+                          MakeBooleanChecker())
+            .AddAttribute("DccMode",
+                          "DCC mode: 'reactive' or 'adaptive'",
+                          StringValue("reactive"),
+                          MakeStringAccessor(&RoutingProtocol::m_dccMode),
+                          MakeStringChecker());
     return tid;
 }
 
@@ -481,6 +498,19 @@ RoutingProtocol::HelloTimerExpire()
     // Send HELLO if triggered
     if (shouldSend)
     {
+        // ========== DCC Gate Check ==========
+        if (m_dccEnabled && m_dcc)
+        {
+            int64_t nowMs = Simulator::Now().GetMilliSeconds();
+            if (!m_dcc->CheckGateOpen(nowMs))
+            {
+                NS_LOG_DEBUG("HELLO suppressed by DCC (gate closed), Toff=" 
+                             << m_dcc->GetToff() << "ms");
+                // Skip sending, but still reschedule
+                goto reschedule;
+            }
+        }
+        
         NS_LOG_DEBUG("Adaptive HELLO triggered: " << triggerReason 
                      << " elapsed=" << elapsed.GetMilliSeconds() << "ms"
                      << " heading=" << curHeading << " (prev=" << m_prevHeading << ")"
@@ -489,7 +519,15 @@ RoutingProtocol::HelloTimerExpire()
         // ========== FIX 3: State update moved to SendHello() ==========
         // SendHello() will update m_lastHelloTime/m_prev* at actual send time
         SendHello();
+        
+        // Notify DCC of transmission
+        if (m_dccEnabled && m_dcc)
+        {
+            m_dcc->NotifyTx(Simulator::Now().GetMilliSeconds());
+        }
     }
+    
+reschedule:
     
     // Schedule next check with jitter (±25%)
     Ptr<UniformRandomVariable> checkJitter = CreateObject<UniformRandomVariable>();

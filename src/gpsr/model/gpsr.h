@@ -9,6 +9,8 @@
 #include "gpsr-packet.h"
 #include "gpsr-ptable.h"
 #include "gpsr-rqueue.h"
+#include "gpsr-dcc.h"
+#include "gpsr-metric-supervisor.h"
 
 #include "ns3/god.h"
 #include "ns3/ip-l4-protocol.h"
@@ -134,6 +136,19 @@ class RoutingProtocol : public Ipv4RoutingProtocol
      */
     PositionTable* GetPositionTable() { return &m_neighbors; }
 
+    /**
+     * \brief Set DCC controller for HELLO message congestion control
+     * \param dcc Pointer to GpsrDcc object
+     */
+    void SetDcc(Ptr<GpsrDcc> dcc) { m_dcc = dcc; }
+
+    /**
+     * \brief Set MetricSupervisor for CBR monitoring
+     * \param metricSupervisor Pointer to GpsrMetricSupervisor object
+     */
+    void SetMetricSupervisor(Ptr<GpsrMetricSupervisor> metricSupervisor) { m_metricSupervisor = metricSupervisor; }
+
+
   private:
     /// Start protocol operation
     void Start();
@@ -208,6 +223,13 @@ class RoutingProtocol : public Ipv4RoutingProtocol
     // Adaptive mode control
     bool m_adaptiveHelloEnabled{true}; ///< Enable adaptive HELLO (true) or fixed interval (false)
     // ========== End Adaptive HELLO parameters ==========
+    
+    // ========== DCC (Decentralized Congestion Control) ==========
+    bool m_dccEnabled{true};                     ///< Enable DCC for HELLO messages (default: enabled)
+    std::string m_dccMode{"reactive"};           ///< DCC mode: "reactive" or "adaptive"
+    Ptr<GpsrDcc> m_dcc{nullptr};                 ///< DCC controller
+    Ptr<GpsrMetricSupervisor> m_metricSupervisor{nullptr}; ///< CBR monitor
+    // ========== End DCC parameters ==========
     
     uint32_t m_maxQueueLen;
     Time m_maxQueueTime;

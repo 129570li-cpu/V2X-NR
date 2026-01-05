@@ -5,6 +5,8 @@ set(source_files
     model/gpsr-ptable.cc
     model/gpsr-rqueue.cc
     model/gpsr-packet.cc
+    model/gpsr-dcc.cc
+    model/gpsr-metric-supervisor.cc
     helper/gpsr-helper.cc
 )
 
@@ -13,6 +15,8 @@ set(header_files
     model/gpsr-ptable.h
     model/gpsr-rqueue.h
     model/gpsr-packet.h
+    model/gpsr-dcc.h
+    model/gpsr-metric-supervisor.h
     helper/gpsr-helper.h
 )
 
