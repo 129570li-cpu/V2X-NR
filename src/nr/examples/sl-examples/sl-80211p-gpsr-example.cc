@@ -56,7 +56,7 @@ double g_dataRateKbps = 100.0;          //!< Data rate: ~25 packets/sec at 400B
 // ========== Distance-based traffic generation ==========
 std::vector<uint32_t> g_activeNodeIds;  //!< Track active node IDs from TraCI
 NodeContainer* g_ueNodeContainerPtr = nullptr;  //!< Pointer to UE node container for traffic gen
-double g_minDistanceForTraffic = 250.0;  //!< Minimum distance (m) for multi-hop traffic
+double g_minDistanceForTraffic = 500.0;  //!< Minimum distance (m) for multi-hop traffic
 uint32_t g_flowId = 0;                  //!< Global flow counter for unique port assignment
 uint16_t g_basePort = 10000;            //!< Base port for flow-specific PacketSink
 
