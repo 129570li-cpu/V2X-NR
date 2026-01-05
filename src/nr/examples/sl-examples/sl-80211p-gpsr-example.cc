@@ -61,22 +61,6 @@ uint32_t g_flowId = 0;                  //!< Global flow counter for unique port
 uint16_t g_basePort = 10000;            //!< Base port for flow-specific PacketSink
 
 /*
- * Structure to keep track of the transmission time of the packets at the
- * application layer. Used to calculate packet delay.
- */
-struct PacketWithRxTimestamp
-{
-    Ptr<const Packet> p;
-    Time txTimestamp;
-};
-
-/*
- * Map to store received packets and reception timestamps at the application
- * layer. Used to calculate packet delay at the application layer.
- */
-std::map<std::string, PacketWithRxTimestamp> g_rxPacketsForDelayCalc;
-
-/*
  * \brief Trace sink function to count and logging the transmitted data packets
  *        and their corresponding transmission timestamp at the application layer
  *
@@ -92,15 +76,7 @@ TxPacketTraceForDelay(Ptr<const Packet> p,
                       const SeqTsSizeHeader& seqTsSizeHeader)
 {
     g_txPktCounter++;
-    std::ostringstream oss;
-    auto dst = InetSocketAddress::ConvertFrom(dstAddrs);
-    oss << dst.GetPort() << "#" << seqTsSizeHeader.GetSeq();
-    std::string mapKey = oss.str();
-    PacketWithRxTimestamp mapValue;
-    mapValue.p = p;
-    mapValue.txTimestamp = Simulator::Now();
-    g_rxPacketsForDelayCalc.insert(std::pair<std::string, PacketWithRxTimestamp>(mapKey, mapValue));
-    NS_LOG_DEBUG(" TX: " << mapKey);
+    NS_LOG_DEBUG("TX: seq=" << seqTsSizeHeader.GetSeq());
 }
 
 /*
@@ -119,30 +95,15 @@ RxPacketTraceForDelay(Ptr<const Packet> p,
                       const SeqTsSizeHeader& seqTsSizeHeader)
 {
     g_rxPktCounter++;
+    g_rxPktDelivered++;
+    g_rxPayloadBytes += p->GetSize();
 
-    double delay = 0.0;
-    std::ostringstream oss;
-    auto dst = InetSocketAddress::ConvertFrom(dstAddrs);
-    oss << dst.GetPort() << "#" << seqTsSizeHeader.GetSeq();
-    std::string mapKey = oss.str();
+    // 直接使用 SeqTsSizeHeader 内置的发送时间戳计算延迟
+    Time txTime = seqTsSizeHeader.GetTs();
+    double delay = (Simulator::Now() - txTime).GetMilliSeconds();
+    g_delays.push_back(delay);
 
-    auto it = g_rxPacketsForDelayCalc.find(mapKey);
-    if (it == g_rxPacketsForDelayCalc.end())
-    {
-        NS_LOG_WARN("Rx packet not found for delay calculation: " << mapKey);
-        // Don't calculate delay for this packet, not counted as successful delivery
-    }
-    else
-    {
-        // Successfully matched with TX record - count as delivered
-        g_rxPktDelivered++;
-        g_rxPayloadBytes += p->GetSize();  // Payload after SeqTsSizeHeader removed
-        delay =
-            Simulator::Now().GetSeconds() * 1000.0 - it->second.txTimestamp.GetSeconds() * 1000.0;
-        g_delays.push_back(delay);
-        g_rxPacketsForDelayCalc.erase(mapKey);
-    }
-    NS_LOG_DEBUG(" RX: " << mapKey << delay);
+    NS_LOG_DEBUG("RX: seq=" << seqTsSizeHeader.GetSeq() << " delay=" << delay << "ms");
 }
 
 // NR-specific declarations removed for 802.11p version
@@ -632,8 +593,8 @@ main(int argc, char* argv[])
     NS_LOG_INFO("TraCI connected to SUMO, synchronizing vehicle positions");
 
     // Schedule distance-based traffic generation (start after vehicles enter)
-    Simulator::Schedule(Seconds(5.0), &GenerateDistantTraffic);
-    NS_LOG_INFO("Scheduled distance-based traffic generation (minDist=" << g_minDistanceForTraffic << "m)");
+    Simulator::Schedule(Seconds(20.0), &GenerateDistantTraffic);
+    NS_LOG_INFO("Scheduled distance-based traffic generation (minDist=" << g_minDistanceForTraffic << "m, start at 20s)");
 
     Simulator::Stop(finalSimTime);
     Simulator::Run();
