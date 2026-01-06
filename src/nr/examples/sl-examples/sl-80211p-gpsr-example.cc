@@ -36,6 +36,14 @@ $ ./ns3 run "sl-multi-lc-example --help"
 #include "ns3/wifi-module.h"
 #include "ns3/propagation-module.h"
 #include "ns3/yans-wifi-helper.h"
+// L2/L3 header helpers for unicast filtering
+#include "ns3/llc-snap-header.h"
+#include "ns3/node-list.h"
+// ARP includes for static cache population
+#include "ns3/arp-l3-protocol.h"
+#include "ns3/arp-cache.h"
+#include "ns3/ipv4-l3-protocol.h"
+#include "ns3/ipv4-interface.h"
 
 #include <iomanip>
 #include <ostream>
@@ -82,10 +90,14 @@ TxPacketTraceForDelay(Ptr<const Packet> p,
                       const SeqTsSizeHeader& seqTsSizeHeader)
 {
     g_txPktCounter++;
-    InetSocketAddress srcInet = InetSocketAddress::ConvertFrom(srcAddrs);
     InetSocketAddress dstInet = InetSocketAddress::ConvertFrom(dstAddrs);
+    // Get source IP from node context
+    uint32_t nodeId = Simulator::GetContext();
+    Ptr<Node> node = g_ueNodeContainerPtr->Get(nodeId);
+    Ptr<Ipv4> ipv4 = node->GetObject<Ipv4>();
+    Ipv4Address srcIp = ipv4->GetAddress(1, 0).GetLocal();  // Interface 1, Address 0
     NS_LOG_INFO("APP-TX: UID=" << p->GetUid() << " seq=" << seqTsSizeHeader.GetSeq()
-                << " src=" << srcInet.GetIpv4() << " dst=" << dstInet.GetIpv4());
+                << " src=" << srcIp << " dst=" << dstInet.GetIpv4());
 }
 
 /*
@@ -117,6 +129,240 @@ RxPacketTraceForDelay(Ptr<const Packet> p,
     NS_LOG_INFO("APP-RX: UID=" << p->GetUid() << " seq=" << seqTsSizeHeader.GetSeq() 
                 << " src=" << srcInet.GetIpv4() << " dst=" << dstInet.GetIpv4()
                 << " delay=" << delay << "ms");
+}
+
+// === MAC/PHY Trace Callbacks for Unicast Debugging ===
+bool TryGetNodeIdFromContext(const std::string& context, uint32_t* nodeId)
+{
+    std::string::size_type nodeStart = context.find("/NodeList/");
+    if (nodeStart == std::string::npos)
+    {
+        return false;
+    }
+    nodeStart += 10;
+    std::string::size_type nodeEnd = context.find("/", nodeStart);
+    if (nodeEnd == std::string::npos || nodeEnd == nodeStart)
+    {
+        return false;
+    }
+
+    uint32_t id = 0;
+    for (std::string::size_type i = nodeStart; i < nodeEnd; ++i)
+    {
+        char c = context[i];
+        if (c < '0' || c > '9')
+        {
+            return false;
+        }
+        id = id * 10 + static_cast<uint32_t>(c - '0');
+    }
+    *nodeId = id;
+    return true;
+}
+
+bool HasLlcSnapHeader(Ptr<const Packet> p)
+{
+    uint8_t buf[3] = {0};
+    uint32_t copied = p->CopyData(buf, 3);
+    return copied == 3 && buf[0] == 0xaa && buf[1] == 0xaa && buf[2] == 0x03;
+}
+
+bool ExtractIpv4Destination(Ptr<const Packet> p, Ipv4Address* dst)
+{
+    if (!dst)
+    {
+        return false;
+    }
+
+    bool hasLlc = HasLlcSnapHeader(p);
+    Ptr<Packet> copy = p->Copy();
+
+    if (hasLlc)
+    {
+        LlcSnapHeader llc;
+        copy->RemoveHeader(llc);
+        if (llc.GetType() != 0x0800) // IPv4
+        {
+            return false;
+        }
+    }
+    else
+    {
+        uint8_t first = 0;
+        if (copy->CopyData(&first, 1) != 1 || (first >> 4) != 4)
+        {
+            return false;
+        }
+    }
+
+    if (copy->GetSize() < 20)
+    {
+        return false;
+    }
+
+    Ipv4Header ip;
+    copy->RemoveHeader(ip);
+    *dst = ip.GetDestination();
+    return true;
+}
+
+bool IsDirectedBroadcast(Ipv4Address dst, uint32_t nodeId)
+{
+    if (nodeId >= NodeList::GetNNodes())
+    {
+        return false;
+    }
+    Ptr<Node> node = NodeList::GetNode(nodeId);
+    if (!node)
+    {
+        return false;
+    }
+    Ptr<Ipv4> ipv4 = node->GetObject<Ipv4>();
+    if (!ipv4)
+    {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < ipv4->GetNInterfaces(); ++i)
+    {
+        for (uint32_t j = 0; j < ipv4->GetNAddresses(i); ++j)
+        {
+            if (ipv4->GetAddress(i, j).GetBroadcast() == dst)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool IsUnicastIpv4Packet(Ptr<const Packet> p, uint32_t nodeId)
+{
+    Ipv4Address dst;
+    if (!ExtractIpv4Destination(p, &dst))
+    {
+        return false;
+    }
+    if (dst == Ipv4Address::GetZero() || dst.IsMulticast() || dst.IsBroadcast())
+    {
+        return false;
+    }
+    if (IsDirectedBroadcast(dst, nodeId))
+    {
+        return false;
+    }
+    return true;
+}
+
+void
+MacTxCallback(std::string context, Ptr<const Packet> p)
+{
+    uint32_t nodeId = 0;
+    if (!TryGetNodeIdFromContext(context, &nodeId)) return;
+    if (!IsUnicastIpv4Packet(p, nodeId)) return;
+    NS_LOG_INFO("MAC-TX: UID=" << p->GetUid() << " node=" << nodeId << " size=" << p->GetSize());
+}
+
+void
+MacTxDropCallback(std::string context, Ptr<const Packet> p)
+{
+    uint32_t nodeId = 0;
+    if (!TryGetNodeIdFromContext(context, &nodeId)) return;
+    if (!IsUnicastIpv4Packet(p, nodeId)) return;
+    NS_LOG_INFO("MAC-TX-DROP: UID=" << p->GetUid() << " node=" << nodeId << " size=" << p->GetSize());
+}
+
+void
+MacRxCallback(std::string context, Ptr<const Packet> p)
+{
+    uint32_t nodeId = 0;
+    if (!TryGetNodeIdFromContext(context, &nodeId)) return;
+    if (!IsUnicastIpv4Packet(p, nodeId)) return;
+    NS_LOG_INFO("MAC-RX: UID=" << p->GetUid() << " node=" << nodeId << " size=" << p->GetSize());
+}
+
+void
+PhyTxDropCallback(std::string context, Ptr<const Packet> p)
+{
+    uint32_t nodeId = 0;
+    if (!TryGetNodeIdFromContext(context, &nodeId)) return;
+    if (!IsUnicastIpv4Packet(p, nodeId)) return;
+    NS_LOG_INFO("PHY-TX-DROP: UID=" << p->GetUid() << " node=" << nodeId);
+}
+
+void
+PhyRxDropCallback(std::string context, Ptr<const Packet> p, WifiPhyRxfailureReason reason)
+{
+    uint32_t nodeId = 0;
+    if (!TryGetNodeIdFromContext(context, &nodeId)) return;
+    if (!IsUnicastIpv4Packet(p, nodeId)) return;
+    NS_LOG_INFO("PHY-RX-DROP: UID=" << p->GetUid() << " node=" << nodeId << " reason=" << reason);
+}
+
+// === Pre-populate ARP cache for all nodes ===
+// This eliminates the need for runtime ARP resolution which can fail
+void PopulateArpCache(const NodeContainer& nodes, const NetDeviceContainer& devices)
+{
+    NS_LOG_INFO("Populating ARP cache for " << nodes.GetN() << " nodes");
+
+    if (devices.GetN() != nodes.GetN())
+    {
+        NS_LOG_WARN("PopulateArpCache: device count does not match node count");
+        return;
+    }
+    
+    for (uint32_t i = 0; i < nodes.GetN(); ++i)
+    {
+        Ptr<Node> node = nodes.Get(i);
+        Ptr<Ipv4L3Protocol> ip = node->GetObject<Ipv4L3Protocol>();
+        if (!ip) continue;
+        
+        Ptr<NetDevice> dev = devices.Get(i);
+        if (!dev) continue;
+
+        int32_t ifIndex = ip->GetInterfaceForDevice(dev);
+        if (ifIndex < 0) continue;
+
+        Ptr<Ipv4Interface> interface = ip->GetInterface(static_cast<uint32_t>(ifIndex));
+        if (!interface) continue;
+        
+        Ptr<ArpL3Protocol> arp = node->GetObject<ArpL3Protocol>();
+        if (!arp) continue;
+        
+        // CreateCache returns existing cache if one exists for this device
+        Ptr<ArpCache> cache = arp->CreateCache(dev, interface);
+        
+        // Add all other nodes to this node's ARP cache
+        for (uint32_t j = 0; j < nodes.GetN(); ++j)
+        {
+            if (i == j) continue;  // Skip self
+            
+            Ptr<Node> otherNode = nodes.Get(j);
+            Ptr<Ipv4L3Protocol> otherIpv4 = otherNode->GetObject<Ipv4L3Protocol>();
+            if (!otherIpv4) continue;
+
+            Ptr<NetDevice> otherDev = devices.Get(j);
+            if (!otherDev) continue;
+
+            int32_t otherIfIndex = otherIpv4->GetInterfaceForDevice(otherDev);
+            if (otherIfIndex < 0) continue;
+
+            Ipv4Address otherAddr =
+                otherIpv4->GetAddress(static_cast<uint32_t>(otherIfIndex), 0).GetLocal();
+            if (otherAddr == Ipv4Address::GetZero()) continue;
+
+            Mac48Address otherMac = Mac48Address::ConvertFrom(otherDev->GetAddress());
+            
+            ArpCache::Entry* entry = cache->Lookup(otherAddr);
+            if (!entry)
+            {
+                entry = cache->Add(otherAddr);
+            }
+            entry->SetMacAddress(otherMac);
+            entry->MarkPermanent();
+        }
+    }
+    NS_LOG_INFO("ARP cache populated for all " << nodes.GetN() << " nodes");
 }
 
 // NR-specific declarations removed for 802.11p version
@@ -425,6 +671,19 @@ main(int argc, char* argv[])
     // Fix random streams
     int64_t stream = 1;
     stream += wifi.AssignStreams(ueNetDev, stream);
+    
+    // === Connect MAC/PHY Trace Callbacks for Unicast Debugging ===
+    Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/MacTx",
+                    MakeCallback(&MacTxCallback));
+    Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/MacTxDrop",
+                    MakeCallback(&MacTxDropCallback));
+    Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Mac/MacRx",
+                    MakeCallback(&MacRxCallback));
+    Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Phy/PhyTxDrop",
+                    MakeCallback(&PhyTxDropCallback));
+    Config::Connect("/NodeList/*/DeviceList/*/$ns3::WifiNetDevice/Phy/PhyRxDrop",
+                    MakeCallback(&PhyRxDropCallback));
+    NS_LOG_INFO("MAC/PHY trace callbacks connected for unicast debugging");
 
     // Configure internet with GPSR routing
     GpsrHelper gpsr;
@@ -437,7 +696,7 @@ main(int argc, char* argv[])
     // This must be called AFTER InternetStackHelper.Install()
     gpsr.Install(ueNodeContainer);
     NS_LOG_INFO("GPSR routing protocol installed on all UEs");
-
+    
     // ========== DCC Initialization ==========
     // Create global MetricSupervisor for CBR monitoring
     g_metricSupervisor = CreateObject<ns3::gpsr::GpsrMetricSupervisor>();
@@ -566,6 +825,9 @@ main(int argc, char* argv[])
     Ipv4AddressHelper ipv4Helper;
     ipv4Helper.SetBase("7.0.0.0", "255.255.0.0", "0.0.0.2");  // Start from 7.0.0.2
     Ipv4InterfaceContainer ueIpIface = ipv4Helper.Assign(ueNetDev);
+
+    // Pre-populate ARP cache for all nodes to avoid ARP resolution delays/failures
+    PopulateArpCache(ueNodeContainer, ueNetDev);
     
     NS_LOG_DEBUG("Device 0 has address " << ueIpIface.GetAddress(0)); // 7.0.0.2
     NS_LOG_DEBUG("Device 1 has address " << ueIpIface.GetAddress(1)); // 7.0.0.3
