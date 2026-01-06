@@ -1019,7 +1019,7 @@ RoutingProtocol::RouteInput(Ptr<const Packet> p,
                             const ErrorCallback& ecb)
 {
     NS_LOG_FUNCTION(this << p->GetUid() << header.GetDestination() << idev->GetAddress());
-    NS_LOG_DEBUG("RouteInput-RX: UID=" << p->GetUid() << " rawSize=" << p->GetSize() << " dst=" << header.GetDestination());
+    NS_LOG_INFO("RouteInput-RX: UID=" << p->GetUid() << " rawSize=" << p->GetSize() << " dst=" << header.GetDestination());
 
     if (m_socketAddresses.empty())
     {
@@ -1239,7 +1239,7 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
     if (tHeader.Get() == GPSRTYPE_POS)
     {
         p->RemoveHeader(hdr);
-        NS_LOG_DEBUG("Forwarding-HDR: UID=" << p->GetUid() 
+        NS_LOG_INFO("Forwarding-HDR: UID=" << p->GetUid() 
                      << " Size=" << p->GetSize()
                      << " InRec=" << (int)hdr.GetInRec()
                      << " Nhops=" << (int)hdr.GetNhops()
@@ -1433,7 +1433,7 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
 
     PositionHeader hdr;
     p->RemoveHeader(hdr);
-    NS_LOG_DEBUG("RecoveryMode-HDR: UID=" << p->GetUid() 
+    NS_LOG_INFO("RecoveryMode-HDR: UID=" << p->GetUid() 
                  << " Size=" << p->GetSize()
                  << " InRec=" << (int)hdr.GetInRec()
                  << " Nhops=" << (int)hdr.GetNhops()
@@ -1745,7 +1745,7 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
     }
     
     // 诊断日志：发送时的包大小和 header 详情
-    NS_LOG_DEBUG("RecoveryMode-TX: UID=" << p->GetUid()
+    NS_LOG_INFO("RecoveryMode-TX: UID=" << p->GetUid()
                  << " pktSize=" << p->GetSize()
                  << " hasHopList=" << (int)posHeader.GetHasHopList()
                  << " nhops=" << (int)posHeader.GetNhops()
@@ -2150,7 +2150,7 @@ RoutingProtocol::AddHeaders(Ptr<Packet> p,
     // DEBUG: Verify tag was added successfully
     GpsrNextHopTag verifyTag;
     bool hasNhTag = p->PeekPacketTag(verifyTag);
-    NS_LOG_DEBUG("AddHeaders: packet UID=" << p->GetUid() 
+    NS_LOG_INFO("AddHeaders: packet UID=" << p->GetUid() 
                  << " nextHop=" << nextHop 
                  << " tagAdded=" << hasNhTag 
                  << " verifyNextHop=" << (hasNhTag ? verifyTag.GetNextHop() : Ipv4Address::GetZero()));
