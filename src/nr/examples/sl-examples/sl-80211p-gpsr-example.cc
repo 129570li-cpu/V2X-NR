@@ -58,7 +58,7 @@ double g_dataRateKbps = 100.0;          //!< Data rate: ~25 packets/sec at 400B
 // ========== Distance-based traffic generation ==========
 std::vector<uint32_t> g_activeNodeIds;  //!< Track active node IDs from TraCI
 NodeContainer* g_ueNodeContainerPtr = nullptr;  //!< Pointer to UE node container for traffic gen
-double g_minDistanceForTraffic = 250.0;  //!< Minimum distance (m) for multi-hop traffic
+double g_minDistanceForTraffic = 500.0;  //!< Minimum distance (m) for multi-hop traffic
 uint32_t g_flowId = 0;                  //!< Global flow counter for unique port assignment
 uint16_t g_basePort = 10000;            //!< Base port for flow-specific PacketSink
 
@@ -82,7 +82,10 @@ TxPacketTraceForDelay(Ptr<const Packet> p,
                       const SeqTsSizeHeader& seqTsSizeHeader)
 {
     g_txPktCounter++;
-    NS_LOG_DEBUG("TX: seq=" << seqTsSizeHeader.GetSeq());
+    InetSocketAddress srcInet = InetSocketAddress::ConvertFrom(srcAddrs);
+    InetSocketAddress dstInet = InetSocketAddress::ConvertFrom(dstAddrs);
+    NS_LOG_INFO("APP-TX: UID=" << p->GetUid() << " seq=" << seqTsSizeHeader.GetSeq()
+                << " src=" << srcInet.GetIpv4() << " dst=" << dstInet.GetIpv4());
 }
 
 /*
@@ -109,7 +112,11 @@ RxPacketTraceForDelay(Ptr<const Packet> p,
     double delay = (Simulator::Now() - txTime).GetMilliSeconds();
     g_delays.push_back(delay);
 
-    NS_LOG_DEBUG("RX: seq=" << seqTsSizeHeader.GetSeq() << " delay=" << delay << "ms");
+    InetSocketAddress srcInet = InetSocketAddress::ConvertFrom(srcAddrs);
+    InetSocketAddress dstInet = InetSocketAddress::ConvertFrom(dstAddrs);
+    NS_LOG_INFO("APP-RX: UID=" << p->GetUid() << " seq=" << seqTsSizeHeader.GetSeq() 
+                << " src=" << srcInet.GetIpv4() << " dst=" << dstInet.GetIpv4()
+                << " delay=" << delay << "ms");
 }
 
 // NR-specific declarations removed for 802.11p version
@@ -310,9 +317,8 @@ main(int argc, char* argv[])
     Time startupTime = Seconds(2.0);  // Time for SUMO/TraCI to start
     Time finalSimTime = trafficTime + startupTime + Seconds(0.05);
 
-    // Enable GPSR debug logging
+    // Enable GPSR debug logging - main config is below (around line 369)
     //LogComponentEnable("GpsrPositionTable", LOG_LEVEL_DEBUG);  // Disabled to reduce SINR logs
-    LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_INFO);
 
     // Create UE node pool - pre-allocate nodes for SUMO vehicles
     NodeContainer ueNodeContainer;
@@ -366,8 +372,7 @@ main(int argc, char* argv[])
     }
     
     // Logging configuration - simplified for production
-    LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_INFO);    // Forwarding-related logs only
-    //LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_DEBUG);   // DEBUG for LocalDelivery
+    LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_INFO);    // Forward/Drop/Delivery traces
     //LogComponentEnable("GpsrPacket", LOG_LEVEL_DEBUG);             // DEBUG for Deserialize
     //LogComponentEnable("GpsrRoutingProtocol", LOG_LEVEL_WARN);     // Only warnings/errors
     //LogComponentEnable("SlWifiGpsrExample", LOG_LEVEL_DEBUG);    // Very verbose
@@ -452,7 +457,7 @@ main(int argc, char* argv[])
         // Create DCC for this node
         Ptr<ns3::gpsr::GpsrDcc> dcc = CreateObject<ns3::gpsr::GpsrDcc>();
         std::string nodeIdStr = std::to_string(node->GetId());
-        dcc->SetupDCC(nodeIdStr, g_metricSupervisor, node, "reactive", 100);  // 100ms DCC interval
+        dcc->SetupDCC(nodeIdStr, g_metricSupervisor, node, "adaptive", 100);  // 100ms DCC interval
         dcc->SetBitRate(6000000);  // 6 Mbps (802.11p OFDM Rate)
         dcc->StartDCC();
         g_dccPerNode[i] = dcc;

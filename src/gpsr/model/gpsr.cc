@@ -951,7 +951,7 @@ RoutingProtocol::RouteOutput(Ptr<Packet> p,
         // Check oif BEFORE returning route
         if (oif && route->GetOutputDevice() != oif)
         {
-            NS_LOG_DEBUG("Output device doesn't match. Dropped.");
+            NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=output-device-mismatch");
             sockerr = Socket::ERROR_NOROUTETOHOST;
             return Ptr<Ipv4Route>();
         }
@@ -1138,8 +1138,7 @@ RoutingProtocol::RouteInput(Ptr<const Packet> p,
             // FIX: DROP any fragmented GPSR packet instead of delivering with headers.
             if (header.GetFragmentOffset() != 0 || !header.IsLastFragment())
             {
-                NS_LOG_DEBUG("LocalDelivery: Dropping fragmented GPSR packet (fragOff=" 
-                             << header.GetFragmentOffset() << " moreFrags=" << !header.IsLastFragment() << ")");
+                NS_LOG_INFO("DROP: UID=" << packet->GetUid() << " reason=LocalDelivery-fragmented");
                 return false; // Drop the packet entirely
             }
             // Size too small or other issue - clear tag and continue
@@ -1194,7 +1193,7 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
     // Layer 0: Check protocol - only UDP packets have GPSR headers (ICMP inherits stale tags)
     if (header.GetProtocol() != UdpL4Protocol::PROT_NUMBER) // Not UDP
     {
-        NS_LOG_DEBUG("Non-UDP packet (protocol " << (int)header.GetProtocol() << "). Not a GPSR data packet. Drop.");
+        NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=non-UDP(proto=" << (int)header.GetProtocol() << ")");
         // Clear any stale GPSR tag that might have been inherited
         GpsrHeaderTag staleTag;
         if (p->PeekPacketTag(staleTag))
@@ -1208,8 +1207,7 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
     // Drop ANY fragmented packet: offset != 0 (not first) OR !IsLastFragment (more fragments follow)
     if (header.GetFragmentOffset() != 0 || !header.IsLastFragment())
     {
-        NS_LOG_DEBUG("Fragmented packet (offset=" << header.GetFragmentOffset() 
-                     << " moreFrags=" << !header.IsLastFragment() << "). GPSR cannot route fragments. Drop.");
+        NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=fragmented(offset=" << header.GetFragmentOffset() << ")");
         return false;
     }
     
@@ -1217,7 +1215,7 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
     GpsrHeaderTag tag;
     if (!p->PeekPacketTag(tag) || tag.GetType() != GPSRTYPE_POS)
     {
-        NS_LOG_DEBUG("No GPSR POS tag found. Not a GPSR data packet. Drop.");
+        NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=no-GPSR-tag");
         return false;
     }
     
@@ -1225,7 +1223,7 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
     uint32_t minGpsrSize = TypeHeader().GetSerializedSize() + PositionHeader().GetSerializedSize();
     if (p->GetSize() < minGpsrSize)
     {
-        NS_LOG_DEBUG("Packet too small for GPSR headers (size " << p->GetSize() << " < " << minGpsrSize << "). Drop.");
+        NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=too-small(size=" << p->GetSize() << ")");
         return false;
     }
     
@@ -1234,7 +1232,7 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
 
     if (!tHeader.IsValid())
     {
-        NS_LOG_DEBUG("GPSR TypeHeader invalid after RemoveHeader. Drop.");
+        NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=invalid-TypeHeader");
         return false;
     }
 
@@ -1340,7 +1338,7 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
         route->SetGateway(nextHop);
         route->SetOutputDevice(m_ipv4->GetNetDevice(1));
 
-        NS_LOG_LOGIC("Forwarding to " << dst << " from " << origin << " via " << nextHop);
+        NS_LOG_INFO("FORWARD: UID=" << p->GetUid() << " src=" << origin << " dst=" << dst << " via=" << nextHop << " mode=greedy");
         
         // Add GpsrNextHopTag to pass next-hop info to EpcUeNas for TFT matching
         GpsrNextHopTag existingNhTag;
@@ -1350,7 +1348,7 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
             uint8_t ttl = existingNhTag.GetTtl();
             if (ttl == 0)
             {
-                NS_LOG_DEBUG("GpsrNextHopTag TTL=0, dropping packet to prevent loop");
+                NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=Greedy-TTL0");
                 return true;  // Silent drop - packet handled (consumed), no error callback
             }
             // Decrement TTL and update next-hop
@@ -1392,7 +1390,7 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
         return true;
     }
 
-    NS_LOG_DEBUG("No route to " << dst);
+    NS_LOG_INFO("DROP: UID=" << packet->GetUid() << " reason=no-route(dst=" << dst << ")");
     return false;
 }
 
@@ -1415,21 +1413,21 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
     GpsrHeaderTag tag;
     if (!p->PeekPacketTag(tag) || tag.GetType() != GPSRTYPE_POS)
     {
-        NS_LOG_DEBUG("RecoveryMode: No GPSR POS tag found. Drop.");
+        NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=RecoveryMode-no-tag");
         return;
     }
     
     uint32_t minGpsrSize = TypeHeader().GetSerializedSize() + PositionHeader().GetSerializedSize();
     if (p->GetSize() < minGpsrSize)
     {
-        NS_LOG_DEBUG("RecoveryMode: Packet too small for GPSR headers. Drop.");
+        NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=RecoveryMode-too-small");
         return;
     }
     
     p->RemoveHeader(tHeader);
     if (!tHeader.IsValid())
     {
-        NS_LOG_DEBUG("RecoveryMode: GPSR TypeHeader invalid. Drop");
+        NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=RecoveryMode-invalid-TypeHeader");
         return;
     }
 
@@ -1482,7 +1480,7 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
             });
         if (!greedySuccess)
         {
-            NS_LOG_DEBUG("RecoveryMode: Greedy return failed, dropping packet");
+            NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=RecoveryMode-greedy-failed");
         }
         return;  // EXIT RecoveryMode
     }
@@ -1527,21 +1525,21 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
             // If NextCCW still fails, drop (NS-2 doesn't fallback to FindFace here)
             if (nextHop == Ipv4Address::GetZero())
             {
-                NS_LOG_DEBUG("RecoveryMode: NextCCW returned Zero even after peri-as-beacon. Drop.");
+                NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=RecoveryMode-NextCCW-zero");
                 return;
             }
         }
         else
         {
             // No ingress in history - should not happen, drop
-            NS_LOG_DEBUG("RecoveryMode: No ingress in hop history. Drop.");
+            NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=RecoveryMode-no-ingress");
             return;
         }
     }
 
     if (nextHop == Ipv4Address::GetZero())
     {
-        NS_LOG_DEBUG("RecoveryMode: No valid neighbor. Drop.");
+        NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=RecoveryMode-no-neighbor");
         return;
     }
 
@@ -1592,7 +1590,7 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
             double lfDistSq = CalculateDistanceSq(lfPos.x, lfPos.y, hdr.GetLfPosx(), hdr.GetLfPosy());
             if (lfDistSq < 1e-6)  // Lf unchanged
             {
-                NS_LOG_DEBUG("RecoveryMode: LOOP DETECTED (first edge, directed). Dropping packet.");
+                NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=RecoveryMode-loop-detected");
                 return;  // Drop packet
             }
         }
@@ -1612,7 +1610,7 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
             
             if (nextHop == Ipv4Address::GetZero())
             {
-                NS_LOG_DEBUG("RecoveryMode: No valid face after loop recovery. Drop.");
+                NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=RecoveryMode-no-face-after-loop");
                 return;
             }
             
@@ -1770,7 +1768,7 @@ RoutingProtocol::RecoveryMode(Ipv4Address dst,
         uint8_t ttl = existingNhTag.GetTtl();
         if (ttl == 0)
         {
-            NS_LOG_DEBUG("RecoveryMode: GpsrNextHopTag TTL=0, dropping packet to prevent loop");
+            NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=RecoveryMode-TTL0");
             return;
         }
         p->RemovePacketTag(existingNhTag);
@@ -1804,7 +1802,7 @@ RoutingProtocol::DeferredRouteOutput(Ptr<const Packet> p,
     // Non-UDP packets (e.g., ICMP) should not have GPSR headers added.
     if (header.GetProtocol() != UdpL4Protocol::PROT_NUMBER) // Not UDP
     {
-        NS_LOG_DEBUG("DeferredRouteOutput: Non-UDP packet (protocol " << (int)header.GetProtocol() << "). GPSR only handles UDP. Dropping.");
+        NS_LOG_INFO("DROP: UID=" << packet->GetUid() << " reason=DeferredRouteOutput-non-UDP");
         // Clear any stale tag that might have been inherited
         GpsrHeaderTag staleTag;
         if (packet->PeekPacketTag(staleTag))
@@ -1913,7 +1911,7 @@ RoutingProtocol::SendPacketFromQueue(Ipv4Address dst)
     if (!m_locationService->HasPosition(dst))
     {
         m_queue.DropPacketWithDst(dst);
-        NS_LOG_LOGIC("Location Service did not find dst. Drop packet to " << dst);
+        NS_LOG_INFO("DROP: reason=LocationService-no-position(dst=" << dst << ")");
         return true;
     }
 
@@ -1956,21 +1954,21 @@ RoutingProtocol::SendPacketFromQueue(Ipv4Address dst)
             GpsrHeaderTag tag;
             if (!p->PeekPacketTag(tag) || tag.GetType() != GPSRTYPE_POS)
             {
-                NS_LOG_DEBUG("SendPacketFromQueue: No GPSR POS tag. Drop.");
+                NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=SendFromQueue-no-tag");
                 continue;
             }
             
             uint32_t minGpsrSize = TypeHeader().GetSerializedSize() + PositionHeader().GetSerializedSize();
             if (p->GetSize() < minGpsrSize)
             {
-                NS_LOG_DEBUG("SendPacketFromQueue: Packet too small. Drop.");
+                NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=SendFromQueue-too-small");
                 continue;
             }
             
             p->RemoveHeader(tHeader);
             if (!tHeader.IsValid())
             {
-                NS_LOG_DEBUG("SendPacketFromQueue: Invalid TypeHeader. Drop.");
+                NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=SendFromQueue-invalid-TypeHeader");
                 continue;
             }
 
@@ -2037,7 +2035,7 @@ RoutingProtocol::SendPacketFromQueue(Ipv4Address dst)
             uint8_t ttl = existingNhTag.GetTtl();
             if (ttl == 0)
             {
-                NS_LOG_DEBUG("SendPacketFromQueue: GpsrNextHopTag TTL=0, dropping packet");
+                NS_LOG_INFO("DROP: UID=" << p->GetUid() << " reason=SendFromQueue-TTL0");
                 continue;  // Skip this packet, process next in queue
             }
             p->RemovePacketTag(existingNhTag);
