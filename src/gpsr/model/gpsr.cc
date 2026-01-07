@@ -244,6 +244,11 @@ RoutingProtocol::GetTypeId()
                           BooleanValue(true),
                           MakeBooleanAccessor(&RoutingProtocol::m_perimeterMode),
                           MakeBooleanChecker())
+            .AddAttribute("UseTwoHop",
+                          "Enable two-hop greedy neighbor selection",
+                          BooleanValue(true),
+                          MakeBooleanAccessor(&RoutingProtocol::m_useTwoHop),
+                          MakeBooleanChecker())
             // ========== Adaptive HELLO attributes ==========
             .AddAttribute("AdaptiveHelloEnabled",
                           "Enable adaptive HELLO interval (ETSI CAM style)",
@@ -913,8 +918,15 @@ RoutingProtocol::RouteOutput(Ptr<Packet> p,
     }
     else
     {
-        Vector myVel = mm->GetVelocity();
-        nextHop = m_neighbors.BestNeighborTwoHop(dstPos, myPos, myVel);
+        if (m_useTwoHop)
+        {
+            Vector myVel = mm->GetVelocity();
+            nextHop = m_neighbors.BestNeighborTwoHop(dstPos, myPos, myVel);
+        }
+        else
+        {
+            nextHop = m_neighbors.BestNeighbor(dstPos, myPos);
+        }
     }
 
     if (nextHop != Ipv4Address::GetZero())
@@ -1291,8 +1303,16 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
     }
 
     // Find best neighbor using two-hop aware scoring
-    Vector myVel = mm->GetVelocity();
-    Ipv4Address nextHop = m_neighbors.BestNeighborTwoHop(Position, myPos, myVel);
+    Ipv4Address nextHop = Ipv4Address::GetZero();
+    if (m_useTwoHop)
+    {
+        Vector myVel = mm->GetVelocity();
+        nextHop = m_neighbors.BestNeighborTwoHop(Position, myPos, myVel);
+    }
+    else
+    {
+        nextHop = m_neighbors.BestNeighbor(Position, myPos);
+    }
 
     if (nextHop != Ipv4Address::GetZero())
     {
@@ -1926,8 +1946,15 @@ RoutingProtocol::SendPacketFromQueue(Ipv4Address dst)
     else
     {
         Vector dstPos = m_locationService->GetPosition(dst);
-        Vector myVel = mm->GetVelocity();
-        nextHop = m_neighbors.BestNeighborTwoHop(dstPos, myPos, myVel);
+        if (m_useTwoHop)
+        {
+            Vector myVel = mm->GetVelocity();
+            nextHop = m_neighbors.BestNeighborTwoHop(dstPos, myPos, myVel);
+        }
+        else
+        {
+            nextHop = m_neighbors.BestNeighbor(dstPos, myPos);
+        }
 
         if (nextHop == Ipv4Address::GetZero())
         {
@@ -2097,8 +2124,16 @@ RoutingProtocol::AddHeaders(Ptr<Packet> p,
     }
     else
     {
-        Vector myVel = mm->GetVelocity();
-        nextHop = m_neighbors.BestNeighborTwoHop(m_locationService->GetPosition(destination), myPos, myVel);
+        Vector dstPos = m_locationService->GetPosition(destination);
+        if (m_useTwoHop)
+        {
+            Vector myVel = mm->GetVelocity();
+            nextHop = m_neighbors.BestNeighborTwoHop(dstPos, myPos, myVel);
+        }
+        else
+        {
+            nextHop = m_neighbors.BestNeighbor(dstPos, myPos);
+        }
         NS_LOG_DEBUG("AddHeaders: calculated best neighbor " << nextHop);
     }
 

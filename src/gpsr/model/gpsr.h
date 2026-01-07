@@ -230,6 +230,8 @@ class RoutingProtocol : public Ipv4RoutingProtocol
     Ptr<GpsrDcc> m_dcc{nullptr};                 ///< DCC controller
     Ptr<GpsrMetricSupervisor> m_metricSupervisor{nullptr}; ///< CBR monitor
     // ========== End DCC parameters ==========
+
+    bool m_useTwoHop{true}; ///< Enable two-hop greedy neighbor selection
     
     uint32_t m_maxQueueLen;
     Time m_maxQueueTime;

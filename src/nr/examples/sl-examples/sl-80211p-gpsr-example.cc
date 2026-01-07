@@ -37,11 +37,13 @@ $ ./ns3 run "sl-multi-lc-example --help"
 #include "ns3/propagation-module.h"
 #include "ns3/yans-wifi-helper.h"
 // L2/L3 header helpers for unicast filtering
+#include "ns3/ipv4-queue-disc-item.h"
 #include "ns3/llc-snap-header.h"
 #include "ns3/node-list.h"
 // ARP includes for static cache population
 #include "ns3/arp-l3-protocol.h"
 #include "ns3/arp-cache.h"
+#include "ns3/arp-header.h"
 #include "ns3/ipv4-l3-protocol.h"
 #include "ns3/ipv4-interface.h"
 
@@ -180,6 +182,11 @@ bool ExtractIpv4Destination(Ptr<const Packet> p, Ipv4Address* dst)
     if (hasLlc)
     {
         LlcSnapHeader llc;
+        uint32_t llcSize = llc.GetSerializedSize();
+        if (copy->GetSize() < llcSize)
+        {
+            return false;
+        }
         copy->RemoveHeader(llc);
         if (llc.GetType() != 0x0800) // IPv4
         {
@@ -236,6 +243,22 @@ bool IsDirectedBroadcast(Ipv4Address dst, uint32_t nodeId)
     return false;
 }
 
+bool IsDirectedBroadcast(Ipv4Address dst, Ptr<Ipv4> ipv4, uint32_t interface)
+{
+    if (!ipv4 || interface >= ipv4->GetNInterfaces())
+    {
+        return false;
+    }
+    for (uint32_t j = 0; j < ipv4->GetNAddresses(interface); ++j)
+    {
+        if (ipv4->GetAddress(interface, j).GetBroadcast() == dst)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool IsUnicastIpv4Packet(Ptr<const Packet> p, uint32_t nodeId)
 {
     Ipv4Address dst;
@@ -252,6 +275,184 @@ bool IsUnicastIpv4Packet(Ptr<const Packet> p, uint32_t nodeId)
         return false;
     }
     return true;
+}
+
+bool IsUnicastIpv4Packet(Ptr<const Packet> p, Ptr<Ipv4> ipv4, uint32_t interface)
+{
+    Ipv4Address dst;
+    if (!ExtractIpv4Destination(p, &dst))
+    {
+        return false;
+    }
+    if (dst == Ipv4Address::GetZero() || dst.IsMulticast() || dst.IsBroadcast() ||
+        IsDirectedBroadcast(dst, ipv4, interface))
+    {
+        return false;
+    }
+    return true;
+}
+
+bool IsUnicastIpv4QueueDiscItem(Ptr<const QueueDiscItem> item,
+                                uint32_t nodeId,
+                                Ipv4Address* dstOut)
+{
+    Ptr<const Ipv4QueueDiscItem> ipv4Item = DynamicCast<const Ipv4QueueDiscItem>(item);
+    if (!ipv4Item || ipv4Item->GetProtocol() != Ipv4L3Protocol::PROT_NUMBER)
+    {
+        return false;
+    }
+
+    Ipv4Address dst = ipv4Item->GetHeader().GetDestination();
+    if (dst == Ipv4Address::GetZero() || dst.IsMulticast() || dst.IsBroadcast() ||
+        IsDirectedBroadcast(dst, nodeId))
+    {
+        return false;
+    }
+
+    if (dstOut)
+    {
+        *dstOut = dst;
+    }
+    return true;
+}
+
+const char*
+Ipv4DropReasonToString(Ipv4L3Protocol::DropReason reason)
+{
+    switch (reason)
+    {
+    case Ipv4L3Protocol::DROP_TTL_EXPIRED:
+        return "TTL_EXPIRED";
+    case Ipv4L3Protocol::DROP_NO_ROUTE:
+        return "NO_ROUTE";
+    case Ipv4L3Protocol::DROP_BAD_CHECKSUM:
+        return "BAD_CHECKSUM";
+    case Ipv4L3Protocol::DROP_INTERFACE_DOWN:
+        return "IFACE_DOWN";
+    case Ipv4L3Protocol::DROP_ROUTE_ERROR:
+        return "ROUTE_ERROR";
+    case Ipv4L3Protocol::DROP_FRAGMENT_TIMEOUT:
+        return "FRAG_TIMEOUT";
+    case Ipv4L3Protocol::DROP_DUPLICATE:
+        return "DUPLICATE";
+    }
+    return "UNKNOWN";
+}
+
+void
+Ipv4DropCallback(std::string context,
+                 const Ipv4Header& header,
+                 Ptr<const Packet> p,
+                 Ipv4L3Protocol::DropReason reason,
+                 Ptr<Ipv4> ipv4,
+                 uint32_t interface)
+{
+    uint32_t nodeId = 0;
+    if (!TryGetNodeIdFromContext(context, &nodeId)) return;
+
+    Ipv4Address dst = header.GetDestination();
+    if (dst == Ipv4Address::GetZero() || dst.IsMulticast() || dst.IsBroadcast() ||
+        IsDirectedBroadcast(dst, ipv4, interface))
+    {
+        return;
+    }
+
+    NS_LOG_INFO("IPV4-DROP: UID=" << p->GetUid()
+                 << " node=" << nodeId
+                 << " dst=" << dst
+                 << " reason=" << Ipv4DropReasonToString(reason)
+                 << " iface=" << interface);
+}
+
+void
+Ipv4TxCallback(std::string context,
+               Ptr<const Packet> p,
+               Ptr<Ipv4> ipv4,
+               uint32_t interface)
+{
+    uint32_t nodeId = 0;
+    if (!TryGetNodeIdFromContext(context, &nodeId)) return;
+    if (!IsUnicastIpv4Packet(p, ipv4, interface)) return;
+
+    Ipv4Address dst;
+    if (!ExtractIpv4Destination(p, &dst)) return;
+    NS_LOG_INFO("IPV4-TX: UID=" << p->GetUid()
+                 << " node=" << nodeId
+                 << " dst=" << dst
+                 << " iface=" << interface);
+}
+
+void
+QueueDiscDropCallback(std::string context, Ptr<const QueueDiscItem> item)
+{
+    uint32_t nodeId = 0;
+    if (!TryGetNodeIdFromContext(context, &nodeId)) return;
+
+    Ipv4Address dst;
+    if (!IsUnicastIpv4QueueDiscItem(item, nodeId, &dst)) return;
+
+    NS_LOG_INFO("QDISC-DROP: UID=" << item->GetPacket()->GetUid()
+                 << " node=" << nodeId
+                 << " dst=" << dst);
+}
+
+void
+QueueDiscDropReasonCallback(std::string context, Ptr<const QueueDiscItem> item, const char* reason)
+{
+    uint32_t nodeId = 0;
+    if (!TryGetNodeIdFromContext(context, &nodeId)) return;
+
+    Ipv4Address dst;
+    if (!IsUnicastIpv4QueueDiscItem(item, nodeId, &dst)) return;
+
+    NS_LOG_INFO("QDISC-DROP-REASON: UID=" << item->GetPacket()->GetUid()
+                 << " node=" << nodeId
+                 << " dst=" << dst
+                 << " reason=" << (reason ? reason : "UNKNOWN"));
+}
+
+void
+TrafficControlDropCallback(Ptr<const Packet> p)
+{
+    uint32_t nodeId = Simulator::GetContext();
+    if (nodeId == Simulator::NO_CONTEXT) return;
+    if (!IsUnicastIpv4Packet(p, nodeId)) return;
+
+    Ipv4Address dst;
+    if (!ExtractIpv4Destination(p, &dst)) return;
+    NS_LOG_INFO("TC-DROP: UID=" << p->GetUid()
+                 << " node=" << nodeId
+                 << " dst=" << dst);
+}
+
+void
+ArpCacheDropCallback(Ptr<const Packet> p)
+{
+    uint32_t nodeId = Simulator::GetContext();
+    if (nodeId == Simulator::NO_CONTEXT) return;
+
+    Ipv4Address dst;
+    if (!ExtractIpv4Destination(p, &dst)) return;
+    if (dst == Ipv4Address::GetZero() || dst.IsMulticast() || dst.IsBroadcast() ||
+        IsDirectedBroadcast(dst, nodeId))
+    {
+        return;
+    }
+
+    NS_LOG_INFO("ARP-CACHE-DROP: UID=" << p->GetUid()
+                 << " node=" << nodeId
+                 << " dst=" << dst);
+}
+
+void
+ArpL3DropCallback(Ptr<const Packet> p)
+{
+    uint32_t nodeId = Simulator::GetContext();
+    if (nodeId == Simulator::NO_CONTEXT) return;
+
+    NS_LOG_INFO("ARP-L3-DROP: UID=" << p->GetUid()
+                 << " node=" << nodeId
+                 << " size=" << p->GetSize());
 }
 
 void
@@ -328,9 +529,14 @@ void PopulateArpCache(const NodeContainer& nodes, const NetDeviceContainer& devi
         
         Ptr<ArpL3Protocol> arp = node->GetObject<ArpL3Protocol>();
         if (!arp) continue;
-        
-        // CreateCache returns existing cache if one exists for this device
-        Ptr<ArpCache> cache = arp->CreateCache(dev, interface);
+
+        // Use the interface's ARP cache; create and bind one if missing.
+        Ptr<ArpCache> cache = interface->GetArpCache();
+        if (!cache)
+        {
+            cache = arp->CreateCache(dev, interface);
+            interface->SetArpCache(cache);
+        }
         
         // Add all other nodes to this node's ARP cache
         for (uint32_t j = 0; j < nodes.GetN(); ++j)
@@ -545,12 +751,16 @@ main(int argc, char* argv[])
 
     // 802.11p parameters
     double txPower = 17;  // dBm (~400m range with TwoRayGround)
+    
+    // GPSR mode switch
+    bool improvedGpsr = true;
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("trafficTime", "The time traffic will be active in seconds", trafficTime);
     cmd.AddValue("packetSize", "packet size in bytes to be used by best effort traffic", udpPacketSize);
     cmd.AddValue("dataRate", "The data rate in kilobits per second for best effort traffic", dataRate);
     cmd.AddValue("testing", "Testing flag for verification", testing);
+    cmd.AddValue("improvedGpsr", "Enable improved GPSR (two-hop greedy, adaptive HELLO, DCC)", improvedGpsr);
 
     // Parse the command line
     cmd.Parse(argc, argv);
@@ -632,6 +842,10 @@ main(int argc, char* argv[])
     std::clog.rdbuf(logFile.rdbuf());
     std::cerr.rdbuf(logFile.rdbuf());
     NS_LOG_INFO("=== SL-80211p-GPSR Example Debug Log Started ===");
+    NS_LOG_INFO("GPSR mode: " << (improvedGpsr ? "improved" : "original")
+                 << " (UseTwoHop=" << (improvedGpsr ? "true" : "false")
+                 << ", AdaptiveHello=" << (improvedGpsr ? "true" : "false")
+                 << ", DCC=" << (improvedGpsr ? "true" : "false") << ")");
     std::cerr << "[CERR-TEST] std::cerr redirect test from main()" << std::endl;
     /************************* 802.11p WiFi Configuration *************************/
     // 802.11p channel and propagation model
@@ -687,10 +901,51 @@ main(int argc, char* argv[])
 
     // Configure internet with GPSR routing
     GpsrHelper gpsr;
+    gpsr.Set("UseTwoHop", BooleanValue(improvedGpsr));
+    gpsr.Set("AdaptiveHelloEnabled", BooleanValue(improvedGpsr));
+    gpsr.Set("DccEnabled", BooleanValue(improvedGpsr));
     InternetStackHelper internet;
     internet.SetRoutingHelper(gpsr);
     internet.Install(ueNodeContainer);
     stream += internet.AssignStreams(ueNodeContainer, stream);
+    Config::Connect("/NodeList/*/$ns3::Ipv4L3Protocol/Drop",
+                    MakeCallback(&Ipv4DropCallback));
+    Config::Connect("/NodeList/*/$ns3::Ipv4L3Protocol/Tx",
+                    MakeCallback(&Ipv4TxCallback));
+    bool tcDropOk = Config::ConnectWithoutContextFailSafe(
+        "/NodeList/*/$ns3::TrafficControlLayer/TcDrop",
+        MakeCallback(&TrafficControlDropCallback));
+    bool qdiscDropOk = Config::ConnectFailSafe(
+        "/NodeList/*/$ns3::TrafficControlLayer/RootQueueDiscList/*/Drop",
+        MakeCallback(&QueueDiscDropCallback));
+    bool qdiscDbeOk = Config::ConnectFailSafe(
+        "/NodeList/*/$ns3::TrafficControlLayer/RootQueueDiscList/*/DropBeforeEnqueue",
+        MakeCallback(&QueueDiscDropReasonCallback));
+    bool qdiscDadOk = Config::ConnectFailSafe(
+        "/NodeList/*/$ns3::TrafficControlLayer/RootQueueDiscList/*/DropAfterDequeue",
+        MakeCallback(&QueueDiscDropReasonCallback));
+    bool arpL3DropOk = Config::ConnectWithoutContextFailSafe(
+        "/NodeList/*/$ns3::ArpL3Protocol/Drop",
+        MakeCallback(&ArpL3DropCallback));
+    bool arpCacheDropOk = Config::ConnectWithoutContextFailSafe(
+        "/NodeList/*/$ns3::ArpL3Protocol/CacheList/*/Drop",
+        MakeCallback(&ArpCacheDropCallback));
+    if (!qdiscDropOk && !qdiscDbeOk && !qdiscDadOk)
+    {
+        NS_LOG_WARN("QueueDisc drop traces not connected (no root queue disc?)");
+    }
+    if (!tcDropOk)
+    {
+        NS_LOG_WARN("TrafficControlLayer TcDrop trace not connected");
+    }
+    if (!arpL3DropOk)
+    {
+        NS_LOG_WARN("ArpL3Protocol Drop trace not connected");
+    }
+    if (!arpCacheDropOk)
+    {
+        NS_LOG_WARN("ArpCache Drop trace not connected");
+    }
 
     // Wire up GPSR m_downTarget callback chain for header insertion
     // This must be called AFTER InternetStackHelper.Install()
@@ -698,60 +953,67 @@ main(int argc, char* argv[])
     NS_LOG_INFO("GPSR routing protocol installed on all UEs");
     
     // ========== DCC Initialization ==========
-    // Create global MetricSupervisor for CBR monitoring
-    g_metricSupervisor = CreateObject<ns3::gpsr::GpsrMetricSupervisor>();
-    g_metricSupervisor->SetNodeContainer(ueNodeContainer);
-    g_metricSupervisor->SetChannelTechnology("80211p");
-    g_metricSupervisor->SetCBRWindow(100);   // 100ms CBR window
-    g_metricSupervisor->SetCBRAlpha(0.5);    // Exponential moving average alpha
-    g_metricSupervisor->SetSimulationTime(finalSimTime.GetSeconds());
-    g_metricSupervisor->StartCheckCBR(-1);   // Monitor all nodes
-    NS_LOG_INFO("DCC MetricSupervisor started for CBR monitoring");
-    
-    // Create DCC instance for each node and link to GPSR
-    for (uint32_t i = 0; i < ueNodeContainer.GetN(); ++i)
+    if (improvedGpsr)
     {
-        Ptr<Node> node = ueNodeContainer.Get(i);
+        // Create global MetricSupervisor for CBR monitoring
+        g_metricSupervisor = CreateObject<ns3::gpsr::GpsrMetricSupervisor>();
+        g_metricSupervisor->SetNodeContainer(ueNodeContainer);
+        g_metricSupervisor->SetChannelTechnology("80211p");
+        g_metricSupervisor->SetCBRWindow(100);   // 100ms CBR window
+        g_metricSupervisor->SetCBRAlpha(0.5);    // Exponential moving average alpha
+        g_metricSupervisor->SetSimulationTime(finalSimTime.GetSeconds());
+        g_metricSupervisor->StartCheckCBR(-1);   // Monitor all nodes
+        NS_LOG_INFO("DCC MetricSupervisor started for CBR monitoring");
         
-        // Create DCC for this node
-        Ptr<ns3::gpsr::GpsrDcc> dcc = CreateObject<ns3::gpsr::GpsrDcc>();
-        std::string nodeIdStr = std::to_string(node->GetId());
-        dcc->SetupDCC(nodeIdStr, g_metricSupervisor, node, "adaptive", 100);  // 100ms DCC interval
-        dcc->SetBitRate(6000000);  // 6 Mbps (802.11p OFDM Rate)
-        dcc->StartDCC();
-        g_dccPerNode[i] = dcc;
-        
-        // Link DCC to GPSR routing protocol
-        Ptr<Ipv4> ipv4 = node->GetObject<Ipv4>();
-        if (!ipv4) continue;
-        
-        Ptr<Ipv4RoutingProtocol> rp = ipv4->GetRoutingProtocol();
-        Ptr<ns3::gpsr::RoutingProtocol> gpsrProto;
-        
-        Ptr<Ipv4ListRouting> listRouting = DynamicCast<Ipv4ListRouting>(rp);
-        if (listRouting)
+        // Create DCC instance for each node and link to GPSR
+        for (uint32_t i = 0; i < ueNodeContainer.GetN(); ++i)
         {
-            for (uint32_t j = 0; j < listRouting->GetNRoutingProtocols(); ++j)
+            Ptr<Node> node = ueNodeContainer.Get(i);
+            
+            // Create DCC for this node
+            Ptr<ns3::gpsr::GpsrDcc> dcc = CreateObject<ns3::gpsr::GpsrDcc>();
+            std::string nodeIdStr = std::to_string(node->GetId());
+            dcc->SetupDCC(nodeIdStr, g_metricSupervisor, node, "adaptive", 100);  // 100ms DCC interval
+            dcc->SetBitRate(6000000);  // 6 Mbps (802.11p OFDM Rate)
+            dcc->StartDCC();
+            g_dccPerNode[i] = dcc;
+            
+            // Link DCC to GPSR routing protocol
+            Ptr<Ipv4> ipv4 = node->GetObject<Ipv4>();
+            if (!ipv4) continue;
+            
+            Ptr<Ipv4RoutingProtocol> rp = ipv4->GetRoutingProtocol();
+            Ptr<ns3::gpsr::RoutingProtocol> gpsrProto;
+            
+            Ptr<Ipv4ListRouting> listRouting = DynamicCast<Ipv4ListRouting>(rp);
+            if (listRouting)
             {
-                int16_t priority;
-                Ptr<Ipv4RoutingProtocol> proto = listRouting->GetRoutingProtocol(j, priority);
-                gpsrProto = DynamicCast<ns3::gpsr::RoutingProtocol>(proto);
-                if (gpsrProto) break;
+                for (uint32_t j = 0; j < listRouting->GetNRoutingProtocols(); ++j)
+                {
+                    int16_t priority;
+                    Ptr<Ipv4RoutingProtocol> proto = listRouting->GetRoutingProtocol(j, priority);
+                    gpsrProto = DynamicCast<ns3::gpsr::RoutingProtocol>(proto);
+                    if (gpsrProto) break;
+                }
+            }
+            else
+            {
+                gpsrProto = DynamicCast<ns3::gpsr::RoutingProtocol>(rp);
+            }
+            
+            if (gpsrProto)
+            {
+                // Set DCC and MetricSupervisor in GPSR protocol
+                gpsrProto->SetDcc(dcc);
+                gpsrProto->SetMetricSupervisor(g_metricSupervisor);
             }
         }
-        else
-        {
-            gpsrProto = DynamicCast<ns3::gpsr::RoutingProtocol>(rp);
-        }
-        
-        if (gpsrProto)
-        {
-            // Set DCC and MetricSupervisor in GPSR protocol
-            gpsrProto->SetDcc(dcc);
-            gpsrProto->SetMetricSupervisor(g_metricSupervisor);
-        }
+        NS_LOG_INFO("DCC initialized for " << ueNodeContainer.GetN() << " nodes");
     }
-    NS_LOG_INFO("DCC initialized for " << ueNodeContainer.GetN() << " nodes");
+    else
+    {
+        NS_LOG_INFO("GPSR original mode: adaptive HELLO/DCC/two-hop disabled");
+    }
 
     // ========== Build Mac48Address to IPv4 mapping + Connect WiFi SNR traces ==========
     NS_LOG_INFO("Building MAC to IP mapping and connecting WiFi SNR traces...");
