@@ -1,6 +1,7 @@
 set(name elite)
 
 set(source_files
+    model/elite-controller.cc
     model/elite-q-table.cc
     model/elite-reward-model.cc
     model/elite-trainer.cc
@@ -9,6 +10,7 @@ set(source_files
 )
 
 set(header_files
+    model/elite-controller.h
     model/elite-q-table.h
     model/elite-reward-model.h
     model/elite-trainer.h
@@ -25,6 +27,8 @@ endif()
 
 set(libraries_to_link
     ${libcore}
+    ${libmobility}
+    ${libnetwork}
     ${xml2_libraries}
 )
 
