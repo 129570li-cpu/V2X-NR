@@ -6,6 +6,7 @@
 #include "elite-q-table.h"
 
 #include <functional>
+#include <limits>
 
 namespace ns3
 {
@@ -81,7 +82,7 @@ EliteQTable::GetMaxQ(const std::string& destination,
                      const std::string& current,
                      const std::vector<std::string>& candidates) const
 {
-    double maxValue = 0.0;
+    double maxValue = std::numeric_limits<double>::lowest();
     bool hasCandidate = false;
 
     for (const auto& next : candidates)
@@ -103,7 +104,7 @@ EliteQTable::GetBestAction(const std::string& destination,
                            const std::vector<std::string>& candidates) const
 {
     std::string bestAction;
-    double bestValue = 0.0;
+    double bestValue = std::numeric_limits<double>::lowest();
     bool hasCandidate = false;
 
     for (const auto& next : candidates)

@@ -86,11 +86,15 @@ EliteRewardModel::ComputePdrReward(const TwinEnvironment& environment,
         return 0.0;
     }
 
+    // 以每车道5辆为满载基准，归一化到 [0, 1]
     const double laneCount = std::max(1u, road->laneCount);
     const double vehicleCount = environment.CountVehiclesOnRoad(road->roadId, offset);
     const double densityScore = std::min(1.0, vehicleCount / (laneCount * 5.0));
 
-    return densityScore;
+    // 使用倒U型高斯函数：密度在0.5时奖励最高（连通性好但不过载）
+    // reward = exp(-4 * (d - 0.5)^2)，峰值约为1.0，在d=0和d=1时约为0.018
+    const double shifted = densityScore - 0.5;
+    return std::exp(-4.0 * shifted * shifted);
 }
 
 double
@@ -104,8 +108,24 @@ EliteRewardModel::ComputeDelayReward(const TwinEnvironment& environment,
         return 0.0;
     }
 
-    const double speed = std::max(kMinPositive, road->maxSpeedMetersPerSecond);
-    const double travelTime = road->lengthMeters / speed;
+    // 估算路段实际平均速度：
+    // 统计在该路段上所有车辆的速度模长，取均值；若无车，则退回限速。
+    double sumSpeed = 0.0;
+    uint32_t count = 0;
+    for (const auto& kv : environment.GetVehicleStates())
+    {
+        if (kv.second.roadId == road->roadId)
+        {
+            const auto& v = kv.second.velocity;
+            sumSpeed += std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+            ++count;
+        }
+    }
+    const double actualSpeed = (count > 0)
+                                   ? std::max(kMinPositive, sumSpeed / count)
+                                   : std::max(kMinPositive, road->maxSpeedMetersPerSecond);
+
+    const double travelTime = road->lengthMeters / actualSpeed;
     return 1.0 / (1.0 + travelTime);
 }
 
@@ -136,10 +156,17 @@ EliteRewardModel::ComputeRoutingCostReward(const TwinEnvironment& environment,
         return 0.0;
     }
 
+    // 预计中继跳数（路段长度 / 通信半径，向上取整，至少为1）
     const double expectedRelayCount =
         std::max(1.0, std::ceil(road->lengthMeters / std::max(kMinPositive, m_communicationRangeMeters)));
+
+    // 将车辆数归一化为车辆密度（辆/百米），避免与跳数直接相加产生量纲混乱
     const double vehicleCount = environment.CountVehiclesOnRoad(road->roadId, offset);
-    const double controlCost = expectedRelayCount + 0.1 * vehicleCount;
+    const double densityPer100m =
+        vehicleCount / std::max(kMinPositive, road->lengthMeters / 100.0);
+
+    // 控制开销 = 跳数 × (1 + 密度惩罚因子)，密度越高控制包越多
+    const double controlCost = expectedRelayCount * (1.0 + 0.1 * densityPer100m);
 
     return 1.0 / (1.0 + controlCost);
 }

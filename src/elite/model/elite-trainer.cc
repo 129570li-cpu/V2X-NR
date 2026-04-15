@@ -24,8 +24,8 @@ EliteTrainer::EliteTrainer()
     : m_environment(nullptr),
       m_qTable(nullptr),
       m_rewardModel(nullptr),
-      m_learningRate(0.9),
-      m_discountFactor(0.1),
+      m_learningRate(0.1),      // alpha: 小步更新，防止Q值振荡
+      m_discountFactor(0.9),    // gamma: 重视长期回报，使路由策略具有全局性
       m_exploitationProbability(0.5),
       m_greedyProbability(0.2),
       m_explorationProbability(0.3),
@@ -135,7 +135,8 @@ EliteTrainer::TrainEpisode(const std::string& sourceJunction,
 
         if (std::find(path.begin(), path.end(), next) != path.end())
         {
-            path.push_back(next);
+            // 检测到环路，直接放弃本 episode，不将重复节点加入路径
+            // 否则 UpdateEpisode 会用含环路的错误路径更新 Q-Table
             break;
         }
 
