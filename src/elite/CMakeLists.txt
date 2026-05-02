@@ -38,3 +38,15 @@ build_lib(
     HEADER_FILES ${header_files}
     LIBRARIES_TO_LINK ${libraries_to_link}
 )
+
+build_lib_example(
+    NAME sl-80211p-elite-example
+    SOURCE_FILES examples/sl-80211p-elite-example.cc
+    LIBRARIES_TO_LINK
+        ${libelite}
+        ${libgpsr}
+        ${libtraci}
+        ${libwifi}
+        ${libapplications}
+        ${libinternet}
+)
