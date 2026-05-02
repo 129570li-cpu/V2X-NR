@@ -11,6 +11,10 @@
     }
 
 #include "gpsr.h"
+#include "gpsr-elite-tag.h"
+
+#include "ns3/elite-controller.h"
+#include "ns3/node-list.h"
 
 #include "ns3/boolean.h"
 #include "ns3/double.h"
@@ -1254,6 +1258,97 @@ RoutingProtocol::Forwarding(Ptr<const Packet> packet,
         updated = myUpdated;
     }
 
+    // ========== ELITE: Restricted greedy forwarding along junction path ==========
+    EliteRoutePathTag eliteTag;
+    if (p->PeekPacketTag(eliteTag) && !eliteTag.IsFinished())
+    {
+        // We have an ELITE path tag — forward toward the current target junction
+        // instead of the final destination.
+        Vector targetJunction = eliteTag.GetCurrentTarget();
+
+        // Check if we are close enough to advance to the next junction
+        if (CalculateDistance(myPos, targetJunction) < ELITE_JUNCTION_THRESHOLD)
+        {
+            // Remove old tag, advance, re-add
+            p->RemovePacketTag(eliteTag);
+            eliteTag.AdvanceToNext();
+            p->AddPacketTag(eliteTag);
+
+            if (eliteTag.IsFinished())
+            {
+                // Path fully traversed — fall through to standard GPSR greedy toward final dst
+                NS_LOG_LOGIC("ELITE path completed, switching to standard GPSR greedy");
+            }
+            else
+            {
+                targetJunction = eliteTag.GetCurrentTarget();
+                NS_LOG_LOGIC("ELITE advanced to junction idx=" << (int)eliteTag.GetCurrentIndex()
+                             << " target=(" << targetJunction.x << "," << targetJunction.y << ")");
+            }
+        }
+
+        if (!eliteTag.IsFinished())
+        {
+            // Find best neighbor toward the current target junction (not the final destination)
+            Vector myVelElite = mm->GetVelocity();
+            Ipv4Address eliteNextHop = m_neighbors.BestNeighborTwoHop(targetJunction, myPos, myVelElite);
+
+            if (eliteNextHop != Ipv4Address::GetZero())
+            {
+                // Greedy forwarding toward junction successful
+                PositionHeader posHeader(Position.x, Position.y, updated,
+                                         0.0, 0.0, (uint8_t)0, myPos.x, myPos.y);
+                p->AddHeader(posHeader);
+                p->AddHeader(tHeader);
+                GpsrHeaderTag tag(GPSRTYPE_POS);
+                if (!p->PeekPacketTag(tag)) { p->AddPacketTag(tag); }
+
+                GpsrHopCountTag hopTag;
+                if (p->PeekPacketTag(hopTag))
+                {
+                    p->RemovePacketTag(hopTag);
+                    hopTag.Increment();
+                    p->AddPacketTag(hopTag);
+                }
+
+                Ptr<Ipv4Route> route = Create<Ipv4Route>();
+                route->SetDestination(dst);
+                route->SetSource(header.GetSource());
+                route->SetGateway(eliteNextHop);
+                route->SetOutputDevice(m_ipv4->GetNetDevice(1));
+
+                NS_LOG_LOGIC("ELITE forwarding to junction via " << eliteNextHop);
+
+                GpsrNextHopTag existingNhTag;
+                if (p->PeekPacketTag(existingNhTag))
+                {
+                    uint8_t ttl = existingNhTag.GetTtl();
+                    if (ttl == 0)
+                    {
+                        NS_LOG_DEBUG("ELITE TTL=0, dropping");
+                        return true;
+                    }
+                    p->RemovePacketTag(existingNhTag);
+                    GpsrNextHopTag nhTag(eliteNextHop, ttl - 1);
+                    p->AddPacketTag(nhTag);
+                }
+                else
+                {
+                    GpsrNextHopTag nhTag(eliteNextHop, 63);
+                    p->AddPacketTag(nhTag);
+                }
+
+                Ipv4Header newHeader = header;
+                newHeader.SetPayloadSize(p->GetSize());
+                ucb(route, p, newHeader);
+                return true;
+            }
+            // If elite next hop failed, fall through to standard GPSR greedy below
+            NS_LOG_LOGIC("ELITE greedy failed toward junction, falling back to standard GPSR");
+        }
+    }
+    // ========== End ELITE restricted forwarding ==========
+
     // Find best neighbor using two-hop aware scoring
     Vector myVel = mm->GetVelocity();
     Ipv4Address nextHop = m_neighbors.BestNeighborTwoHop(Position, myPos, myVel);
@@ -2100,6 +2195,61 @@ RoutingProtocol::AddHeaders(Ptr<Packet> p,
     // Add hop count tag for statistics (initial hop = 0)
     GpsrHopCountTag hopTag(0);
     p->AddPacketTag(hopTag);
+
+    // ========== ELITE: Inject junction path tag at source ==========
+    if (m_eliteController != nullptr &&
+        destination != m_ipv4->GetAddress(1, 0).GetBroadcast())
+    {
+        uint64_t srcId = static_cast<uint64_t>(m_ipv4->GetObject<Node>()->GetId());
+        // Resolve destination node ID from IP address
+        uint64_t dstId = 0;
+        for (uint32_t ni = 0; ni < NodeList::GetNNodes(); ++ni)
+        {
+            Ptr<Node> n = NodeList::GetNode(ni);
+            Ptr<Ipv4> nIpv4 = n->GetObject<Ipv4>();
+            if (nIpv4 && nIpv4->GetNInterfaces() > 1 &&
+                nIpv4->GetAddress(1, 0).GetLocal() == destination)
+            {
+                dstId = static_cast<uint64_t>(n->GetId());
+                break;
+            }
+        }
+
+        if (dstId != 0 && dstId != srcId)
+        {
+            // Request junction path from controller (default: DATA type)
+            auto junctionIds = m_eliteController->RequestPath(
+                srcId, dstId, EliteMessageType::DATA);
+
+            if (!junctionIds.empty())
+            {
+                // Convert junction IDs to coordinates
+                auto twin = m_eliteController->GetTwinEnvironment();
+                std::vector<Vector> junctionCoords;
+                junctionCoords.reserve(junctionIds.size());
+                for (const auto& jid : junctionIds)
+                {
+                    const auto* junc = twin->GetJunction(jid);
+                    if (junc)
+                    {
+                        junctionCoords.push_back(junc->position);
+                    }
+                }
+
+                if (junctionCoords.size() >= 2)
+                {
+                    // Skip the first junction (source) — start from the second
+                    std::vector<Vector> waypointPath(
+                        junctionCoords.begin() + 1, junctionCoords.end());
+                    EliteRoutePathTag eliteTag(waypointPath);
+                    p->AddPacketTag(eliteTag);
+                    NS_LOG_DEBUG("ELITE: injected path tag with "
+                                 << waypointPath.size() << " waypoints");
+                }
+            }
+        }
+    }
+    // ========== End ELITE path injection ==========
     
     // Add GpsrNextHopTag to pass next-hop info to EpcUeNas for TFT matching
     // Remove any existing tag first (in case of re-routing)
@@ -2161,6 +2311,23 @@ RoutingProtocol::PrintRoutingTable(Ptr<OutputStreamWrapper> stream, Time::Unit u
     *stream->GetStream() << "GPSR Routing Protocol - Neighbor Table\n";
     *stream->GetStream() << "(Neighbor positions are dynamic)\n";
 }
+
+// ========== ELITE Controller integration ==========
+
+void
+RoutingProtocol::SetEliteController(Ptr<EliteController> controller)
+{
+    m_eliteController = controller;
+    NS_LOG_INFO("ELITE controller " << (controller ? "attached" : "detached"));
+}
+
+Ptr<EliteController>
+RoutingProtocol::GetEliteController() const
+{
+    return m_eliteController;
+}
+
+// ========== End ELITE Controller integration ==========
 
 } // namespace gpsr
 } // namespace ns3

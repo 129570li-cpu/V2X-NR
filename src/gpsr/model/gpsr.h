@@ -18,6 +18,7 @@
 #include "ns3/location-service.h"
 #include "ns3/mobility-model.h"
 #include "ns3/node.h"
+#include "ns3/ptr.h"
 #include "ns3/tag.h"
 #include "ns3/timer.h"
 
@@ -26,6 +27,10 @@
 
 namespace ns3
 {
+
+// Forward declaration — avoid circular header dependency with elite module
+class EliteController;
+
 namespace gpsr
 {
 
@@ -133,6 +138,24 @@ class RoutingProtocol : public Ipv4RoutingProtocol
      * \return Pointer to the internal PositionTable
      */
     PositionTable* GetPositionTable() { return &m_neighbors; }
+
+    // ========== ELITE Controller integration ==========
+
+    /**
+     * \brief Attach an ELITE controller for hierarchical routing.
+     *
+     * When set, the routing protocol queries the controller for a
+     * junction-level path and performs restricted greedy forwarding
+     * along that path.  When null, standard GPSR behaviour is used.
+     */
+    void SetEliteController(Ptr<EliteController> controller);
+
+    /**
+     * \brief Get the attached ELITE controller (may be null).
+     */
+    Ptr<EliteController> GetEliteController() const;
+
+    // ========== End ELITE Controller integration ==========
 
   private:
     /// Start protocol operation
@@ -245,6 +268,13 @@ class RoutingProtocol : public Ipv4RoutingProtocol
     /// Control overhead counters
     uint64_t m_ctrlHelloTxBytes = 0;
     uint64_t m_ctrlHelloTxPkts = 0;
+
+    // ========== ELITE Controller integration ==========
+    Ptr<EliteController> m_eliteController;  ///< Logical SDN controller (may be null)
+
+    /// Distance threshold (meters) for advancing to the next junction waypoint
+    static constexpr double ELITE_JUNCTION_THRESHOLD = 50.0;
+    // ========== End ELITE Controller integration ==========
 };
 
 } // namespace gpsr

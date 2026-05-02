@@ -5,6 +5,7 @@ set(source_files
     model/gpsr-ptable.cc
     model/gpsr-rqueue.cc
     model/gpsr-packet.cc
+    model/gpsr-elite-tag.cc
     helper/gpsr-helper.cc
 )
 
@@ -13,6 +14,7 @@ set(header_files
     model/gpsr-ptable.h
     model/gpsr-rqueue.h
     model/gpsr-packet.h
+    model/gpsr-elite-tag.h
     helper/gpsr-helper.h
 )
 
@@ -24,6 +26,7 @@ set(libraries_to_link
     ${liblocation-service}
     ${libwifi}
     ${libapplications}
+    ${libelite}
 )
 
 build_lib(
